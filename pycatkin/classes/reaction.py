@@ -90,52 +90,80 @@ class Reaction:
                 print('dErxn: % 1.2f (kJ/mol)' % (self.dErxn * 1.0e-3))
             print('---------------------')
 
-    def calc_rate_constants(self, T, p, verbose=False):
-        """patched version to Compute reaction rate constants.
-        There was a weird bug from using np.max. I changed it to max simply
-        Additionally, there was an add behavior with the adsorbed species rates 
-        (they were not treated as adsorption/desorption rates)
-        """
 
-        self.calc_reaction_energy(T=T, p=p, verbose=verbose)
+    def calc_rate_constants(self, T:float, p:float, verbose:bool=False):
+            """patched version to Compute reaction rate constants.
 
-        if self.reac_type == 'adsorption':
-            gassp = [s for s in self.reactants
-                        if s.state_type == 'gas']
-            assert(len(gassp) == 1)
-            self.kfwd = kads(T=T, mass=gassp[0].mass, area=self.area)
-            if self.dGa_fwd:
-                if verbose:
-                    print('Assuming activated adsorption has Arrhenius rate constant!')
-                self.kfwd = karr(T=T, prefac=self.kfwd, barrier=np.max((self.dGa_fwd, 0.0)))
-            if self.reversible:
-                self.Keq = keq_therm(T=T, rxn_en=self.dGrxn)
-                self.krev = k_from_eq_rel(kknown=self.kfwd, Keq=self.Keq, direction='forward')
+            There was a weird bug from using np.max. I changed it to max simply
+            Additionally, there was an odd behavior with the adsorbed species rates 
+            (they were not treated as adsorption/desorption rates)
+
+            Args:
+                T (float): Temperature [K]
+                p (float): pressure [bar]
+                verbose (bool): whether to print progress or not
+
+            Returns:
+                None
+
+            Sets:
+                Reaction.kfwd (float): Forward reaction rate
+                Reaction.krev (float): Reverse reaction rate
+            """
+
+            # Computes reaction energies in kJ/mol. Sets: self.dEa_fwd, self.dGa_fwd, self.dEa_rev, self.dGa_rev, self.dErxn, self.dGrxn
+            self.calc_reaction_energy(T=T, p=p, verbose=verbose)
+
+            # General step. If reversible, sets krev to None so it can be appropiately computed. Else, it is set to zero
+            self.krev = None if self.reversible else 0.0
+
+            # Arrhenius type of reactions
+            if str(self.reac_type).upper() == "ARRHENIUS" or self.dGa_fwd:
+                # Checks if it is a case of activated adsorption or desorption
+                if verbose and str(self.reac_type).upper() in ["ADSORPTION","DESORPTION"]:
+                    print("Activated adsorption. Will use Arrhenius type of expression")
+
+                # Forward rate (changed np.max for max in here)
+                self.kfwd = karr(T=T, prefac=prefactor(T), barrier=max((self.dGa_fwd, 0.0)))
+
+                # Backward rate
+                if self.krev is None:
+                    self.Keq = keq_therm(T=T, rxn_en=self.dGrxn)
+                    self.krev = k_from_eq_rel(kknown=self.kfwd, Keq=self.Keq, direction='forward')
+
+            # Non-activated adsorption type of reactions (completely modified this portion to include kads and kdes rates, respectively)
+            elif str(self.reac_type).upper() == "ADSORPTION":
+                gas_state = [s for s in self.reactants if s.state_type == "gas"]
+                assert len(gas_state) == 1, "Must have ONLY one gas-phase species adsorbing or desorbing per elementary step"
+                gas_state = gas_state[0]
+
+                # Forward rate (kads as usual, monoatomic approximation)
+                self.kfwd = kads(T=T, mass=gas_state.mass, area=self.area)
+
+                # Backward rate (changed, now uses kdes)
+                if self.krev is None:
+                    self.krev = kdes(
+                        T=T, mass=gas_state.mass, area=self.area, sigma=gas_state.sigma, inertia=gas_state.inertia, des_en=-self.dErxn
+                        )
+            
+            # Non-activated dedsorption type of reactions (completely modified this portion to include kads and kdes rates, respectively)
+            elif str(self.reac_type).upper() == "DESORPTION":
+                gas_state = [s for s in self.products if s.state_type == "gas"]
+                assert len(gas_state) == 1, "Must have ONLY one gas-phase species adsorbing or desorbing per elementary step"
+                gas_state = gas_state[0]
+
+                # Forward rate (kdes)
+                self.kfwd = kdes(
+                        T=T, mass=gas_state.mass, area=self.area, sigma=gas_state.sigma, inertia=gas_state.inertia, des_en=self.dErxn
+                        )
+
+                # Backward rate (kads)
+                if self.krev is None:
+                    self.krev = kads(T=T, mass=gas_state.mass, area=self.area)
+        
             else:
-                self.krev = 0.0
-        elif self.reac_type == 'desorption':
-            gassp = [s for s in self.products
-                        if s.state_type == 'gas']
-            assert(len(gassp) == 1)
-            if self.reversible:
-                self.krev = kads(T=T, mass=gassp[0].mass, area=self.area)
-                if self.dGa_rev:
-                    if verbose:
-                        print('Assuming activated adsorption has Arrhenius rate constant!')
-                    self.krev = karr(T=T, prefac=self.krev, barrier=np.max((self.dGa_rev, 0.0)))
-                self.Keq = keq_therm(T=T, rxn_en=self.dGrxn)
-                self.kfwd = k_from_eq_rel(kknown=self.krev, Keq=self.Keq, direction='reverse')
-            else:
-                print('Inconsistent definition of desorption from equilibrium relation!')
-                self.Keq = None
-                self.krev = 0.0
-        else:
-            self.kfwd = karr(T=T, prefac=prefactor(T), barrier=max((self.dGa_fwd, 0.0))) #Changed np.max for max in here
-            if self.reversible:
-                self.Keq = keq_therm(T=T, rxn_en=self.dGrxn)
-                self.krev = k_from_eq_rel(kknown=self.kfwd, Keq=self.Keq, direction='forward')
-            else:
-                self.krev = 0.0
+                raise RuntimeError(f"Reaction with id {self.name} has invalid `reaction.reac_type`, must be one of `arrhenius`, `adsorption`, `desorption`")
+                
 
     def get_reaction_energy(self, T, p, verbose=False, etype='free'):
         """Returns the reaction energy in J/mol.

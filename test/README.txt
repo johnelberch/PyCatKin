@@ -1,0 +1,4 @@
+- Manually inspected the reactions in the reaction network to match what Yoo et al reported.
+- Similarly, manually inspected the scaling coefficients
+- Inspected equations used in PyCatKin for rate constants (they are correct)
+- Note: calc_rate_constants uses a WRONG reverse rate!!!!

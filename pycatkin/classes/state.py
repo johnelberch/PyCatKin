@@ -513,8 +513,8 @@ class ScalingState(State):
                 r['multiplicity'] = 1.0
             self.Gelec += r['multiplicity'] * (self.scaling_coeffs['gradient'][idx] * dEIS + ref_EIS)
 
-    if verbose:
-        print((self.name + ' elec: %1.2f eV') % self.Gelec)
+        if verbose:
+            print((self.name + ' elec: %1.2f eV') % self.Gelec)
 
     def calc_free_energy(self, T, p, verbose=False):
         """This patch allows the user to take multiple coefficients in list format.
