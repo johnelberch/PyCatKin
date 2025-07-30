@@ -488,70 +488,76 @@ class ScalingState(State):
         self.use_descriptor_as_reactant = use_descriptor_as_reactant
 
     def calc_electronic_energy(self, verbose=False):
-        """Calculates potential energy from scaling relation.
+        """Modified version of calc_electronic_energy method.
 
-        Saves value in eV."""
+        This patch allows the user to take multiple coefficients in list format.
+        IT ASSUMES that the ordering is consistent (i.e., C, O)
 
+        Saves value in eV.
+        """
         assert(self.scaling_reactions is not None)
         assert(self.scaling_coeffs is not None)
 
         self.Gelec = self.scaling_coeffs['intercept']
 
-        for r in self.scaling_reactions.values():
+        for idx, r in enumerate(self.scaling_reactions.values()):
             dEIS = r['reaction'].get_reaction_energy(T=273,
-                                                     p=1.0e5,
-                                                     verbose=verbose,
-                                                     etype='electronic') / (eVtokJ * 1.0e3)
+                                                        p=1.0e5,
+                                                        verbose=verbose,
+                                                        etype='electronic') / (eVtokJ * 1.0e3)
             if self.dereference:
                 ref_EIS = sum([reac.Gelec for reac in r['reaction'].reactants])
             else:
                 ref_EIS = 0.0
             if 'multiplicity' not in r.keys():
                 r['multiplicity'] = 1.0
-            self.Gelec += r['multiplicity'] * (self.scaling_coeffs['gradient'] * dEIS + ref_EIS)
+            self.Gelec += r['multiplicity'] * (self.scaling_coeffs['gradient'][idx] * dEIS + ref_EIS)
 
-        if verbose:
-            print((self.name + ' elec: %1.2f eV') % self.Gelec)
+    if verbose:
+        print((self.name + ' elec: %1.2f eV') % self.Gelec)
 
     def calc_free_energy(self, T, p, verbose=False):
-        """Calculates free energy.
+        """This patch allows the user to take multiple coefficients in list format.
+        IT ASSUMES that the ordering is consistent (i.e., C, O)
 
-        Saves value in eV."""
+        Saves value in eV.
 
+        PATCHES: pycatkin.classes.state.ScalingState.calc_free_energy
+        """
         if self.use_descriptor_as_reactant:
 
             assert(self.scaling_reactions is not None)
             assert(self.scaling_coeffs is not None)
-    
+
             self.Gelec = self.scaling_coeffs['intercept']
             self.Gfree = 0.0
-    
-            for r in self.scaling_reactions.values():
+
+            for idx, r in enumerate(self.scaling_reactions.values()):
                 dEIS = r['reaction'].get_reaction_energy(T=T,
-                                                         p=p,
-                                                         verbose=verbose,
-                                                         etype='electronic') / (eVtokJ * 1.0e3)
+                                                            p=p,
+                                                            verbose=verbose,
+                                                            etype='electronic') / (eVtokJ * 1.0e3)
                 dGIS = r['reaction'].get_reaction_energy(T=T,
-                                                         p=p,
-                                                         verbose=verbose,
-                                                         etype='free') / (eVtokJ * 1.0e3)
+                                                            p=p,
+                                                            verbose=verbose,
+                                                            etype='free') / (eVtokJ * 1.0e3)
                 if self.dereference:
                     ref_EIS = sum([reac.Gelec
-                                   for reac in r['reaction'].reactants])
+                                    for reac in r['reaction'].reactants])
                     ref_GIS = sum([reac.get_free_energy(T=T, p=p, verbose=verbose)
-                                   for reac in r['reaction'].reactants])
+                                    for reac in r['reaction'].reactants])
                 else:
                     ref_EIS = 0.0
                     ref_GIS = 0.0
                 if 'multiplicity' not in r.keys():
                     r['multiplicity'] = 1.0
-                self.Gelec += r['multiplicity'] * (self.scaling_coeffs['gradient'] * dEIS + ref_EIS)
+                self.Gelec += r['multiplicity'] * (self.scaling_coeffs['gradient'][idx] * dEIS + ref_EIS)
                 self.Gfree += r['multiplicity'] * (-ref_EIS - dEIS + dGIS + ref_GIS)
             self.Gfree += self.Gelec
-    
+
             if self.add_to_energy:
                 self.Gfree += self.add_to_energy
-    
+
             if verbose:
                 print((self.name + ' elec: %1.2f eV') % self.Gelec)
                 print((self.name + ' free: %1.2f eV') % self.Gfree)

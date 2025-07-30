@@ -91,15 +91,17 @@ class Reaction:
             print('---------------------')
 
     def calc_rate_constants(self, T, p, verbose=False):
-        """Computes reaction rate constants.
-
+        """patched version to Compute reaction rate constants.
+        There was a weird bug from using np.max. I changed it to max simply
+        Additionally, there was an add behavior with the adsorbed species rates 
+        (they were not treated as adsorption/desorption rates)
         """
 
         self.calc_reaction_energy(T=T, p=p, verbose=verbose)
 
         if self.reac_type == 'adsorption':
             gassp = [s for s in self.reactants
-                     if s.state_type == 'gas']
+                        if s.state_type == 'gas']
             assert(len(gassp) == 1)
             self.kfwd = kads(T=T, mass=gassp[0].mass, area=self.area)
             if self.dGa_fwd:
@@ -113,7 +115,7 @@ class Reaction:
                 self.krev = 0.0
         elif self.reac_type == 'desorption':
             gassp = [s for s in self.products
-                     if s.state_type == 'gas']
+                        if s.state_type == 'gas']
             assert(len(gassp) == 1)
             if self.reversible:
                 self.krev = kads(T=T, mass=gassp[0].mass, area=self.area)
@@ -128,7 +130,7 @@ class Reaction:
                 self.Keq = None
                 self.krev = 0.0
         else:
-            self.kfwd = karr(T=T, prefac=prefactor(T), barrier=np.max((self.dGa_fwd, 0.0)))
+            self.kfwd = karr(T=T, prefac=prefactor(T), barrier=max((self.dGa_fwd, 0.0))) #Changed np.max for max in here
             if self.reversible:
                 self.Keq = keq_therm(T=T, rxn_en=self.dGrxn)
                 self.krev = k_from_eq_rel(kknown=self.kfwd, Keq=self.Keq, direction='forward')
