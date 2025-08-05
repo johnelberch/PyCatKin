@@ -58,8 +58,7 @@ def read_from_input_file(input_path='input.json', base_system=None):
                     sys_params['inflow_state'][s] = sys_params['inflow_state'][s] * p / bartoPa
                 else:
                     raise TypeError('Only gas states can comprise the inflow!')
-        sim_system = System()
-        sim_system.set_parameters(**sys_params)
+        sim_system = System(**sys_params)
         for s in states.keys():
             if states[s].gasdata is not None:
                 states[s].gasdata['state'] = [states[i] for i in states[s].gasdata['state']]
@@ -147,7 +146,6 @@ def read_from_input_file(input_path='input.json', base_system=None):
             else:
                 raise TypeError('Unknown reactor option, please choose InfiniteDilutionReactor or CSTReactor.')
         sim_system.add_reactor(reactor=reactor)
-        sim_system.names_to_indices()
     else:
         if sim_system.reactions is not None:
             raise RuntimeError('Cannot consider reactions without reactor.' +

@@ -14,7 +14,7 @@ import pandas as pd
 
 from pycatkin.classes.state import State
 from pycatkin.classes.reaction import Reaction
-from pycatkin.classes.reactor import Reactor, InfiniteDilutionReactor
+from pycatkin.classes.reactor import Reactor
 from pycatkin.classes.energy import Energy
 
 class System:
@@ -377,9 +377,6 @@ class System:
             for k in sub_dict["prod"]:
                 dydt[k] += net_rate
 
-        if isinstance(self.reactor, InfiniteDilutionReactor):
-            dydt[list(self.gas_indices)] = 0
-
         return dydt
 
     def ss_fun(self, y:np.array) -> np.array:
@@ -390,16 +387,18 @@ class System:
             [np.sum(y[list(surf_indices)]) - 1 for surf_indices in self.coverage_map.values()]
         )
 
+        # Fractional conservation must be one
+        gas_conservation = np.array(
+            [np.sum(y[list(self.gas_indices)]) - 1]
+        )
+
         #Species rate
         dydt = self._get_species_rates(y)
 
-        if isinstance(self.reactor, InfiniteDilutionReactor):
+        if isinstance(self.reactor, pycatkin.classes.reactor.InfiniteDilutionReactor):
+            print("INFINITE DILUTION")
             return np.concatenate((dydt, site_conservation))
         else:
-            # Fractional conservation must be one (gas species)
-            gas_conservation = np.array(
-                [np.sum(y[list(self.gas_indices)]) - 1]
-            )
             return np.concatenate((dydt, site_conservation, gas_conservation))
 
     def find_steady(self):
@@ -412,17 +411,13 @@ class System:
         if self.y0 is None:
             y0 = self._normalize_y(np.random.uniform(size=len(self.initial_system)))
         else:
-            y0 = self.y0                
+            y0 = self.y0
 
         # Stores the number of iterations
         idx = 0
         factor = 1
 
         while idx < 3:
-            # If we have an InfiniteDilutionReactor, we have to set y0 gas to be the initial ones
-            if isinstance(self.reactor, InfiniteDilutionReactor):
-                y0[list(self.gas_indices)] = self.initial_system[list(self.gas_indices)] 
-
             # Solve 
             sol = least_squares(
                     fun = self.ss_fun,

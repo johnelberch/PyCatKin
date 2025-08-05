@@ -124,12 +124,12 @@ class Reaction:
                     print("Activated adsorption. Will use Arrhenius type of expression")
 
                 # Forward rate (changed np.max for max in here)
-                self.kfwd = karr(T=T, prefac=prefactor(T), barrier=max((self.dGa_fwd, 0.0)))
+                self.kfwd = karr(T=T, prefac=prefactor(T), barrier=max((self.dGa_fwd, 0.0))).item()
 
                 # Backward rate
                 if self.krev is None:
                     self.Keq = keq_therm(T=T, rxn_en=self.dGrxn)
-                    self.krev = k_from_eq_rel(kknown=self.kfwd, Keq=self.Keq, direction='forward')
+                    self.krev = k_from_eq_rel(kknown=self.kfwd, Keq=self.Keq, direction='forward').item()
 
             # Non-activated adsorption type of reactions (completely modified this portion to include kads and kdes rates, respectively)
             elif str(self.reac_type).upper() == "ADSORPTION":
@@ -160,9 +160,12 @@ class Reaction:
                 # Backward rate (kads)
                 if self.krev is None:
                     self.krev = kads(T=T, mass=gas_state.mass, area=self.area)
+            
+            elif str(self.reac_type).upper() == "GHOST":
+                pass
         
             else:
-                raise RuntimeError(f"Reaction with id {self.name} has invalid `reaction.reac_type`, must be one of `arrhenius`, `adsorption`, `desorption`")
+                raise RuntimeError(f"Reaction with id {self.name} has invalid `reaction.reac_type`, must be one of `arrhenius`, `adsorption`, `desorption`, `ghost`")
                 
 
     def get_reaction_energy(self, T, p, verbose=False, etype='free'):

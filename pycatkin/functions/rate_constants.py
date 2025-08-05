@@ -6,7 +6,7 @@ from typing import List
 def karr(T, prefac, barrier):
     """Calculates reaction rate constant from Arrhenius expression.
 
-    Returns rate constant."""
+    Returns rate constant in [1/s]"""
 
     k = prefac * np.exp(-barrier / (R * T))
 
@@ -16,22 +16,12 @@ def karr(T, prefac, barrier):
 def kads(T, mass, area):
     """Calculates adsorption rate constant from collision theory.
 
-    Returns rate constant."""
+    Returns rate constant [1/s.Pa]. NOTE: P multiplying must be in Pa"""
 
     k = area / np.sqrt(2.0 * np.pi * (mass * amutokg) * kB * T)
 
     return k
 
-
-# def kdes(T, mass, area, sigma, theta, des_en):
-#     """Calculates desorption rate constant from collision theory.
-
-#     Returns rate constant."""
-
-#     k = ((kB ** 2) * area * 2.0 * np.pi * (mass * amutokg) * (T ** 3)) / (
-#             (h ** 3) * sigma * theta) * np.exp(-des_en / (R * T))
-
-#     return k
 
 def kdes(T: float, mass: float, area: float, sigma: float, inertia: List[float], des_en: float):
     """Calculates the desorption rate constant. This modified version accounts for non diatomic molecules,
