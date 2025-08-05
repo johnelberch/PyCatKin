@@ -294,9 +294,7 @@ class System:
         Gas products MUST ADD to one (fractional concentration)
 
         Args:
-            y (np.array): concentration array. Fractional concentration for gas species. Surface
-                coverage for surface species. Different sites are treated separatedly (a reservoir
-                can have a net coverage of 1, and the main site as well). Order matches self.index_map
+            y (np.array): concentration array
 
         Returns:
             np.array: normalized array
@@ -325,13 +323,8 @@ class System:
                 verbose = self.verbose
             )
 
-    def _calc_rates(self, y) -> np.ndarray:
+    def _calc_rates(self, y):
         """Computes the forward and backward rates for the given reaction network
-
-        Args:
-            y (np.array): concentration array. Fractional concentration for gas species. Surface
-                coverage for surface species. Different sites are treated separatedly (a reservoir
-                can have a net coverage of 1, and the main site as well). Order matches self.index_map
 
         Sets:
             self.rates (np.array) of shape (n_reactions, 2), with first column for forward rate, second column for backward rate
@@ -358,16 +351,11 @@ class System:
 
         return np.array(rates)
 
-    def get_dydt(self, y) -> np.ndarray:
+    def get_dydt(self, y):
         """Gets the right-hand side of the ODE system for each individual species
         Basically, it computes the net generation/consumption rates for each individual species.
         The rates are stored in a numpy array. The order of the array matches the state indexes defined 
         in the index_map
-
-        Args:
-            y (np.array): concentration array. Fractional concentration for gas species. Surface
-                coverage for surface species. Different sites are treated separatedly (a reservoir
-                can have a net coverage of 1, and the main site as well). Order matches self.index_map
 
         Returns:
             dydt (np.array): 1D array of size (num_tracking_elements) with net generation / consumption
@@ -389,54 +377,35 @@ class System:
 
         return dydt
 
-    def get_forward_only(self,y=None) -> np.ndarray:
-        """Computes the forward reaction rate only
-
-        Args:
-            y (np.array): concentration array. Fractional concentration for gas species. Surface
-                coverage for surface species. Different sites are treated separatedly (a reservoir
-                can have a net coverage of 1, and the main site as well). Order matches self.index_map
-
-        returns
-            np.ndarray: Forward rate only in 1/s
+    def ss_fun(self, y_surf:np.array) -> np.array:
+        """Steady-state function. The rates of all products must be zero, and site conservation must prevail
         """
-        if y is None:
-            y = self.y0
+        # Ugly patch, but I will work with this for now (only infinite dilution)
+        if not isinstance(self.reactor, InfiniteDilutionReactor):
+            raise AttributeError("reactor must be of type pycatkin.classes.reactor.InfiniteDilutionReactor")
 
-        # Solution array
-        dydt = np.zeros(len(self.initial_system))      
+        # Force the initial gas concentrations to remain fixed
+        y = np.concat((self.initial_system[list(self.gas_indices)], y_surf))
+        
+        # Steady state encompasses dtheta_i / dt = 0
+        # Let's focus then on theta
+        idx = max(self.gas_indices) + 1 
+        dydt = self.get_dydt(y)[idx:]
+             
+        # # Site conservation laws
+        # site_conservation = np.array(
+        #     [np.sum(y[list(surf_indices)]) - 1 for surf_indices in self.coverage_map.values()]
+        # )
 
-        # Compute rates
-        rates = self._calc_rates(y)
+        #     # Fractional conservation must be one (gas species)
+        #     gas_conservation = np.array(
+        #         [np.sum(y[list(self.gas_indices)]) - 1]
 
-        # Get rate per species in network
-        for idx, sub_dict in enumerate(self.rate_map.values()):
-            frate = rates[idx,0] #forward only
-            for k in sub_dict["reac"]:
-                dydt[k] -= frate
-            for k in sub_dict["prod"]:
-                dydt[k] += frate
+        # return np.concatenate((dydt, site_conservation))
 
         return dydt
 
-    def _fun_ss(self, y_surf: np.array) -> np.ndarray:
-        if not isinstance(self.reactor, InfiniteDilutionReactor):
-            raise AttributeError("reactor must be of type pycatkin.classes.reactor.InfiniteDilutionReactor")
-        
-        # Invariant compositions (flow gas)
-        y_gas = self.initial_system[list(self.gas_indices)]
-
-        # Total compositions to compute rates
-        y = np.concat([y_gas, y_surf])
-
-        # Get rates for each species
-        dydt = self.get_dydt(y)
-
-        # Return the SURFACE ONLY dydt
-        return dydt[len(y_gas):]
-        
-
-    def find_steady(self, max_iters: int = 30) -> np.ndarray:
+    def find_steady(self, max_iters: int = 5):
         """Finds the a steady-state solution.
 
         Args:
@@ -444,48 +413,265 @@ class System:
                 the site conservation laws (and gas concentration profiles if required) are within their limits with 
                 less than 5% error
 
-        Returns:
-            np.ndarray: steady-state concentrations
-
         NOTE: I wasn't able to find a way to FORCE the site conservation. Nonetheless, I have found that, if
         you resubmit a failed calculation, you often find the correct root!
         """
-        # Randomized initial guess (take surface only)
-        y0 = self._normalize_y(np.random.uniform(size=len(self.initial_system))) if self.y0 is None else self.y0
-        y0 = y0[len(self.gas_indices):]
+        # Randomized initial guess
+        if self.y0 is None:
+            y0 = self._normalize_y(np.random.uniform(size=len(self.initial_system)))
+        else:
+            y0 = self.y0                
 
-        # Preliminars
-        idx = 0 #N iterations
-        factor = 1 #Tightness factor (multiplies tol)
+        # Stores the number of iterations
+        idx = 0
+        factor = 1
+
+        # Fix (focus only on theta)
+        y0 = y0[max(self.gas_indices)+1 :]
 
         while idx < max_iters:
+            # If we have an InfiniteDilutionReactor, we have to set y0 gas to be the initial ones
+            # if isinstance(self.reactor, InfiniteDilutionReactor):
+            #     y0[list(self.gas_indices)] = self.initial_system[list(self.gas_indices)] 
+
+            # Solve 
+            # sol = least_squares(
+            #         fun = self.ss_fun,
+            #         x0 = y0,
+            #         jac = '3-point',
+            #         bounds = (0,1),
+            #         method = "trf",
+            #         ftol = self.ode_params["ftol"]/factor,
+            #         xtol = None,
+            #         loss = "soft_l1",
+            #         max_nfev  = self.ode_params["nsteps"],
+            #         verbose = 2 if self.verbose else 0,
+            # )
             sol = root(
-                fun = self._fun_ss,
+                fun = self.ss_fun,
                 x0 = y0,
-                method = "lm",
+                method = "hybr",
                 jac = False,
-                tol=1e-6*factor
+                tol=1e-4
             )
 
-            y0 = sol.x
             y = np.concat((self.initial_system[list(self.gas_indices)], y0))
 
-            # Tracking the surface coverages
-            surf_sum = [sum(y[list(surf_indices)]) for surf_indices in self.coverage_map.values()]
-            if self.verbose:
-                print(surf_sum)
+            # Coverages
+            gas_sum = sum(sol.x[list(self.gas_indices)])
+            surf_sum = [sum(sol.x[list(surf_indices)]) for surf_indices in self.coverage_map.values()]
 
             # Check if calculation converged
-            if np.any(0.95 > np.array(surf_sum)) or np.any(1.05 < np.array(surf_sum)) or not sol.success or any(np.array(y0) < 0):
-                y0 = self._normalize_y(np.abs(y))[len(self.gas_indices):]
-                factor = factor/10**(1/4) if factor > 1e-8 else factor #Tighter tol if needed
+            if np.any(0.95 > np.array([gas_sum]+surf_sum)) or np.any(1.05 < np.array([gas_sum]+surf_sum)):
+                print("Steady-state solution not found, repeating least_squares with tighter ftol")
+                y0 = self._normalize_y(sol.x)
+                factor = factor/10 if self.ode_params["ftol"]/factor > 1e-15 else factor #Tighter tol if needed
                 idx += 1
             
             else:
+                self.y0 = sol.x
                 break    
 
         if idx == max_iters:
             print("max number of iterations reached! Returning the best solution found so-far")
 
-        self.y0 = np.concat((self.initial_system[list(self.gas_indices)], sol.x))
         return sol
+
+    # CONTINUE HERE
+    def run_and_return_tof(self, tof_terms, ss_solve=False):
+        """Integrate or solve for the steady state and
+        compute the TOF by summing steps in tof_terms
+
+        Returns array of xi_i terms for each step i."""
+
+        if ss_solve:
+            full_steady = self.find_steady()
+        else:
+            self.solve_odes()
+            full_steady = self.solution[-1, :]
+
+        self.reaction_terms(full_steady)
+
+        tof = 0.0
+        for rind, r in enumerate(self.species_map.keys()):
+            if r in tof_terms:
+                tof += self.rates[rind, 0] - self.rates[rind, 1]
+        return tof
+
+    def activity(self, tof_terms, ss_solve=False):
+        """Calculate the activity from the TOF
+
+        Returns the activity."""
+
+        self.conditions = None  # Force rate constants to be recalculated
+
+        tof = self.run_and_return_tof(tof_terms=tof_terms, ss_solve=ss_solve)
+
+        activity = (np.log((h * tof) / (kB * self.params['temperature'])) *
+                    (R * self.params['temperature'])) * 1.0e-3 / eVtokJ
+
+        return activity
+
+
+    # def reaction_derivatives(self, y):
+    #     """Constructs derivative of reactions wrt each species
+    #     by multiplying rate constants by reactant coverages/pressures.
+
+    #     Returns an (Nr x Ns) array of derivatives."""
+
+    #     self.check_rate_constants()
+
+    #     ny = max(y.shape)
+    #     y = y.reshape((ny, 1))
+    #     dr_dtheta = np.zeros((len(self.species_map), ny))
+
+    #     def prodfun(reac, vartype, species):
+    #         val = 1.0
+    #         scaling = 1.0
+    #         nsp = len(self.species_map[reac][vartype])
+    #         for j in range(nsp):
+    #             if j != species:
+    #                 val *= y[self.species_map[reac][vartype][j], 0]
+    #                 if vartype in ['preac', 'pprod']:
+    #                     scaling = bartoPa
+    #         return val * scaling
+
+    #     for rind, r in enumerate(self.species_map.keys()):
+    #         kfwd = self.rate_constants[r]['kfwd'] + self.species_map[r]['perturbation']
+    #         krev = self.rate_constants[r]['krev'] * (1.0 + self.species_map[r]['perturbation'] /
+    #                                                  self.rate_constants[r]['kfwd'])
+
+    #         yfwd = prodfun(reac=r, vartype='yreac', species=None)
+    #         yrev = prodfun(reac=r, vartype='yprod', species=None)
+    #         pfwd = prodfun(reac=r, vartype='preac', species=None)
+    #         prev = prodfun(reac=r, vartype='pprod', species=None)
+
+    #         for ind, i in enumerate(self.species_map[r]['yreac']):
+    #             dr_dtheta[rind, i] += kfwd * pfwd * prodfun(reac=r, vartype='yreac', species=ind)
+    #         for ind, i in enumerate(self.species_map[r]['yprod']):
+    #             dr_dtheta[rind, i] -= krev * prev * prodfun(reac=r, vartype='yprod', species=ind)
+    #         for ind, i in enumerate(self.species_map[r]['preac']):
+    #             dr_dtheta[rind, i] += kfwd * yfwd * prodfun(reac=r, vartype='preac', species=ind)
+    #         for ind, i in enumerate(self.species_map[r]['pprod']):
+    #             dr_dtheta[rind, i] -= krev * yrev * prodfun(reac=r, vartype='pprod', species=ind)
+    #     return dr_dtheta
+
+    # def species_jacobian(self, y):
+    #     """Constructs derivatives of species ODEs
+    #     for adsorbate coverages and pressures.
+
+    #     Returns Jacobian with shape (Ns x Ns)."""
+
+    #     dr_dtheta = self.reaction_derivatives(y=y)
+
+    #     ny = max(y.shape)
+    #     jac = np.zeros((ny, ny))
+    #     for rind, rinfo in enumerate(self.species_map.values()):
+    #         for sp1 in range(ny):
+    #             for sp2 in rinfo['yreac']:  # Species consumed
+    #                 jac[sp2, sp1] -= dr_dtheta[rind, sp1] * rinfo['scaling']
+    #             for sp2 in rinfo['yprod']:  # Species formed
+    #                 jac[sp2, sp1] += dr_dtheta[rind, sp1] * rinfo['scaling']
+    #             for sp2 in rinfo['preac']:
+    #                 jac[sp2, sp1] -= dr_dtheta[rind, sp1] * rinfo['scaling'] * rinfo['site_density']
+    #             for sp2 in rinfo['pprod']:
+    #                 jac[sp2, sp1] += dr_dtheta[rind, sp1] * rinfo['scaling'] * rinfo['site_density']
+    #     return jac
+
+    # def solve_odes(self):
+    #     """Wrapper for ODE integrator.
+
+    #     """
+
+    #     self.conditions = None  # Force rate constants to be recalculated
+
+    #     # Set initial coverages to zero if not specified
+    #     yinit = np.zeros(len(self.snames))
+    #     if self.params['start_state'] is not None:
+    #         for s in self.params['start_state'].keys():
+    #             yinit[self.snames.index(s)] = self.params['start_state'][s]
+
+    #     # Set inflow mole fractions to zero if not specified
+    #     yinflow = np.zeros(len(self.snames))
+    #     if self.params['inflow_state'] is not None:
+    #         for s in self.params['inflow_state'].keys():
+    #             yinflow[self.snames.index(s)] = self.params['inflow_state'][s]
+
+    #     if self.params['verbose']:
+    #         print('=========\nInitial conditions:\n')
+    #         for s, sname in enumerate(self.snames):
+    #             print('%15s : %1.2e' % (sname, yinit[s]))
+    #         if yinflow.any():
+    #             print('=========\nInflow conditions:\n')
+    #             for s, sname in enumerate(self.snames):
+    #                 if s in self.gas_indices:
+    #                     print('%15s : %1.2e' % (sname, yinflow[s]))
+
+    #     solfun = lambda tval, yval: self.reactor.rhs(self.species_odes)(t=tval, y=yval, T=self.params['temperature'],
+    #                                                                     inflow_state=yinflow)
+    #     jacfun = lambda tval, yval: self.reactor.jacobian(self.species_jacobian)(t=tval, y=yval,
+    #                                                                              T=self.params['temperature'])
+
+    #     # Create ODE solver
+    #     if self.params['ode_solver'] == 'solve_ivp':
+    #         sol = solve_ivp(fun=solfun, jac=jacfun if self.params['jacobian'] else None,
+    #                         t_span=(self.params['times'][0], self.params['times'][-1]),
+    #                         y0=yinit, method='BDF',
+    #                         rtol=self.params['rtol'], atol=self.params['atol'])
+    #         if self.params['verbose']:
+    #             print(sol.message)
+    #         self.times = sol.t
+    #         self.solution = np.transpose(sol.y)
+    #     elif self.params['ode_solver'] == 'ode':
+    #         sol = ode(f=solfun, jac=jacfun if self.params['jacobian'] else None)
+    #         sol.set_integrator('lsoda', method='bdf', rtol=self.params['rtol'], atol=self.params['atol'])
+    #         sol.set_initial_value(yinit, self.params['times'][0])
+    #         self.times = np.concatenate((np.zeros(1),
+    #                                      np.logspace(start=np.log10(self.params['times'][0]
+    #                                                                 if self.params['times'][0] else 1.0e-8),
+    #                                                  stop=np.log10(self.params['times'][-1]),
+    #                                                  num=self.params['nsteps'],
+    #                                                  endpoint=True)))
+    #         self.solution = np.zeros((self.params['nsteps'] + 1,
+    #                                   len(self.snames)))
+    #         self.solution[0, :] = yinit
+    #         i = 1
+    #         while sol.successful() and i <= self.params['nsteps']:
+    #             sol.integrate(self.times[i])
+    #             self.solution[i, :] = sol.y
+    #             i += 1
+    #     else:
+    #         raise RuntimeError('Unknown ODE solver specified. Please use solve_ivp or ode, or add a new option here.')
+
+    #     if self.params['verbose']:
+    #         print('=========\nFinal conditions:\n')
+    #         for s, sname in enumerate(self.snames):
+    #             print('%15s : %9.2e' % (sname, self.solution[-1][s]))
+
+
+    # def degree_of_rate_control(self, tof_terms, ss_solve=False, eps=1.0e-3):
+    #     """Calculate the degree of rate control xi_i
+
+    #     Returns array of xi_i terms for each step i."""
+
+    #     self.conditions = None  # Force rate constants to be recalculated
+
+    #     r0 = self.run_and_return_tof(tof_terms=tof_terms, ss_solve=ss_solve)
+    #     xi = dict()
+
+    #     if self.params['verbose']:
+    #         print('Checking degree of rate control...')
+
+    #     for r in self.reactions.keys():
+    #         self.species_map[r]['perturbation'] = eps * self.rate_constants[r]['kfwd']
+    #         xi_r = self.run_and_return_tof(tof_terms=tof_terms, ss_solve=ss_solve)
+    #         self.species_map[r]['perturbation'] = -eps * self.rate_constants[r]['kfwd']
+    #         xi_r -= self.run_and_return_tof(tof_terms=tof_terms, ss_solve=ss_solve)
+    #         xi_r *= (self.rate_constants[r]['kfwd']) / (2.0 * eps * self.rate_constants[r]['kfwd'] * r0)
+    #         xi[r] = xi_r
+    #         self.species_map[r]['perturbation'] = 0.0
+
+    #         if self.params['verbose']:
+    #             print(r + ': done.')
+
+    #     return xi

@@ -15,23 +15,15 @@ import numpy as np  # noqa: E402
 from ase.build import molecule  # noqa: E402
 from ase.thermochemistry import HarmonicThermo, IdealGasThermo  # noqa: E402
 from ase.units import invcm  # noqa: E402
-from monkey_patching_functions import (new_calc_rate_constants,  # noqa
-                                       new_calc_electronic_energy,
-                                       new_calc_free_energy)
 from pycatkin.classes.state import ScalingState  # noqa: E402
 from pycatkin.functions.load_input import read_from_input_file  # noqa: E402
 from pycatkin.classes.reaction import Reaction
-
-# Monkey patching the ScalingState class so it accepts multiple descriptor coefficients
-ScalingState.calc_free_energy = new_calc_free_energy
-ScalingState.calc_electronic_energy = new_calc_electronic_energy
-Reaction.calc_rate_constants = new_calc_rate_constants
 
 
 #%% 
 #--------------------------------------------------
 ## Loading the inputs
-sim_system = read_from_input_file("../CH4_input.json")
+sim_system = read_from_input_file("CH4_input.json")
 
 # States and reactions
 rxn = sim_system.reactions["R1"]
@@ -40,8 +32,8 @@ sTS = sim_system.states["sC-H--OH"]
 gO2 = sim_system.states["O2"]
 
 # Note the temperature and pressure
-T = sim_system.params['temperature']
-p = sim_system.params['pressure']
+T = sim_system.T
+p = sim_system.p
 
 # Set the descriptors' energies
 EC = 1.5
@@ -184,9 +176,9 @@ def compute_rxn_energies(state_dictio:dict, return_G = True):
 
 IS, TS, FS = compute_rxn_energies(state_dictio=state_dictio)
 
-# print(f"Reaction energy: PyCatKin {rxn_energy/1000} , ASE {(sum(FS) - sum(IS))*96.485} kJ/mol")
-# print(f"Fwd activation: PyCatKin {rxn_barriers[0]/1000} , ASE {(sum(TS) - sum(IS)) * 96.485} kJ/mol")
-# print(f"Bkw activation: PyCatKin {rxn_barriers[1]/1000} , ASE {(sum(TS) - sum(FS)) * 96.485} kJ/mol")
+print(f"Reaction energy: PyCatKin {rxn_energy/1000} , ASE {(sum(FS) - sum(IS))*96.485} kJ/mol")
+print(f"Fwd activation: PyCatKin {rxn_barriers[0]/1000} , ASE {(sum(TS) - sum(IS)) * 96.485} kJ/mol")
+print(f"Bkw activation: PyCatKin {rxn_barriers[1]/1000} , ASE {(sum(TS) - sum(FS)) * 96.485} kJ/mol")
 
 def get_k(state_dictio, T):
     IS, TS, FS = compute_rxn_energies(state_dictio, return_G = True)
@@ -199,7 +191,7 @@ def get_k(state_dictio, T):
     return kfwd, kbkw
 
 kf, kb = get_k(state_dictio=state_dictio, T=T)
-print(f"PRED: kf:{kf:.3e}, kb:{kb:.3e}\nPyCatKin: kf:{rxn.kfwd.item():.3e}, kb:{rxn.krev.item():.3e}")
+print(f"PRED: kf:{kf:.3e}, kb:{kb:.3e}\nPyCatKin: kf:{rxn.kfwd:.3e}, kb:{rxn.krev:.3e}")
 
 # %%
 # Test cases that do not get the electronic energies calculated (should only be descriptors)
