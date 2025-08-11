@@ -7,12 +7,27 @@ from functools import lru_cache
 import numpy as np
 from scipy.integrate import ode, solve_ivp
 from scipy.optimize import fsolve, least_squares, minimize, root
+from typing import NamedTuple
 
 from pycatkin.classes.energy import Energy
 from pycatkin.classes.reaction import Reaction
 from pycatkin.classes.reactor import InfiniteDilutionReactor, Reactor
 from pycatkin.classes.state import State
 from pycatkin.constants.physical_constants import *
+
+
+# Auxiliary named tuple for results
+class SteadyStateResults(NamedTuple):
+    """Auxiliary named tuple to store coverage and success of convergence
+    
+    Args:
+        x (np.ndarray): Steady-state coverage (includes surface and gas species, in a similar fashion to how they are
+            defined inside of System.initial_system)
+        success (bool): Whether the calculation turned successful or not 
+
+    """
+    x: np.ndarray
+    success: bool
 
 
 class System:
@@ -56,7 +71,6 @@ class System:
         self.T = T
         self.p = p
         self.verbose = verbose
-        self.y0 = y0
 
         # Blank assignments (to be populated when reading from input file)
         self.states = dict()
@@ -389,7 +403,7 @@ class System:
 
         return dydt
 
-    def get_forward_only(self,y=None) -> np.ndarray:
+    def get_forward_only(self, y) -> np.ndarray:
         """Computes the forward reaction rate only
 
         Args:
@@ -400,9 +414,6 @@ class System:
         returns
             np.ndarray: Forward rate only in 1/s
         """
-        if y is None:
-            y = self.y0
-
         # Solution array
         dydt = np.zeros(len(self.initial_system))      
 
@@ -436,33 +447,40 @@ class System:
         return dydt[len(y_gas):]
         
 
-    def find_steady(self, max_iters: int = 30) -> np.ndarray:
+    def find_steady(self, max_iters: int = 30, y0: np.ndarray = None, method="lm") -> SteadyStateResults:
         """Finds the a steady-state solution.
 
         Args:
             max_iters (int, optional): How many times to try to refine the solution. Solution refinements are done so 
                 the site conservation laws (and gas concentration profiles if required) are within their limits with 
                 less than 5% error
+            y0 (np.ndarray, optional): Initial guess, defaults to randomized guess from an uniform distribution
 
         Returns:
-            np.ndarray: steady-state concentrations
+            SteadyStateResults: Named tuple with attributes x (1D numpy array of concentrations for all species) and
+                success (boolean indicating if the calculation converged)
 
         NOTE: I wasn't able to find a way to FORCE the site conservation. Nonetheless, I have found that, if
         you resubmit a failed calculation, you often find the correct root!
         """
         # Randomized initial guess (take surface only)
-        y0 = self._normalize_y(np.random.uniform(size=len(self.initial_system))) if self.y0 is None else self.y0
+        if y0 is None:
+            y0 = self._normalize_y(np.random.uniform(size=len(self.initial_system)))
+        elif len(y0) != len(self.initial_system):
+            raise ValueError("Initial guess must have same length as initial guess... Include gas and surface species in here!")
+        
         y0 = y0[len(self.gas_indices):]
 
         # Preliminars
         idx = 0 #N iterations
         factor = 1 #Tightness factor (multiplies tol)
+        success = False # Will be True if calculation converges
 
         while idx < max_iters:
             sol = root(
                 fun = self._fun_ss,
                 x0 = y0,
-                method = "lm",
+                method = method,
                 jac = False,
                 tol=1e-6*factor
             )
@@ -473,19 +491,16 @@ class System:
             # Tracking the surface coverages
             surf_sum = [sum(y[list(surf_indices)]) for surf_indices in self.coverage_map.values()]
             if self.verbose:
-                print(surf_sum)
+                print(f"iter {idx:3d}:  {' , '.join(str(x)[:8] for x in surf_sum)}", end="\r")
 
             # Check if calculation converged
-            if np.any(0.95 > np.array(surf_sum)) or np.any(1.05 < np.array(surf_sum)) or not sol.success or any(np.array(y0) < 0):
+            if np.any(np.abs(np.array(surf_sum) - 1) > 0.05) or any(np.array(y0) < 0) or np.any(np.abs(self.get_dydt(y)) > 1e-6):
                 y0 = self._normalize_y(np.abs(y))[len(self.gas_indices):]
                 factor = factor/10**(1/4) if factor > 1e-8 else factor #Tighter tol if needed
                 idx += 1
-            
             else:
-                break    
+                success = True
+                break
 
-        if idx == max_iters:
-            print("max number of iterations reached! Returning the best solution found so-far")
-
-        self.y0 = np.concat((self.initial_system[list(self.gas_indices)], sol.x))
-        return sol
+        y = np.concat((self.initial_system[list(self.gas_indices)], sol.x))
+        return SteadyStateResults(y, success) 
