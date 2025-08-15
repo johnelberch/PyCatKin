@@ -89,7 +89,7 @@ def k_from_eq_rel(kknown, Keq, direction='forward'):
 def prefactor(T):
     """Calculates prefactor from transition state theory.
 
-    Returns prefactor."""
+    Returns prefactor in [1/s]"""
 
     prefac = kB * T / h
 

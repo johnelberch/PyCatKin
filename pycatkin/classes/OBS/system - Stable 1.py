@@ -80,7 +80,12 @@ class System:
         self.energy_landscapes = dict
         
         self.gas_indices = None
+        self.dynamic_indices = None
+        self.rate_constants = None
+        self.rates = None
         self.times = None
+        self.solution = None
+        self.full_steady = None
 
 
     #----- 
@@ -174,13 +179,11 @@ class System:
             self.reactor.set_indices()...
             self.initial_system (np.array): Array with gas fractional concentrations, and surface coverages
             self.reactions["rxn_name"].kfwd and .krev attributes
-            self.reaction_matrix (np.array): Reaction matrix mapping which reactions are relevant to each species (check `self._reactant_reaction_matrix()`)
         """
         self._names_to_indices()
         self._mapping_reaction_indices()
         self._get_initial_conditions()
-        self._update_rate_constants(self.T, self.p)
-        self._reactant_reaction_matrix()
+        self._update_rate_constants()
 
 
     #-----
@@ -324,15 +327,15 @@ class System:
     #-----
     # Computing rates
     @lru_cache(maxsize=1)
-    def _update_rate_constants(self, T, p):
+    def _update_rate_constants(self):
         """Update rate constants for current conditions.
 
         Rate constants are stored in self.reactions["rxn_name"].kfwd and .krev attributes
         """
         for rxn in self.reactions.values():
             rxn.calc_rate_constants(
-                T = T,
-                p = p,
+                T = self.T,
+                p = self.p,
                 verbose = self.verbose
             )
 
@@ -344,11 +347,11 @@ class System:
                 coverage for surface species. Different sites are treated separatedly (a reservoir
                 can have a net coverage of 1, and the main site as well). Order matches self.index_map
 
-        Returns:
-            np.array: of shape (n_reactions, 2), with first column for forward rate, second column for backward rate
+        Sets:
+            self.rates (np.array) of shape (n_reactions, 2), with first column for forward rate, second column for backward rate
                 Units of 1/s
         """
-        self._update_rate_constants(self.T, self.p) 
+        self._update_rate_constants()
         rates = []
 
         for name in self.rate_map.keys():
@@ -369,24 +372,6 @@ class System:
 
         return np.array(rates)
 
-    def _reactant_reaction_matrix(self):
-        """Creates a Matrix mapping which reactions are relevant to which reactants so we can
-        work with matrix multiplication. The matrix has the shape (species, reactions)
-        in other words, each row corresponds to a species, and the column elements of that
-        row to the reactions that are relevant to it. If the species is a product, the reaction
-        value would be 1, if it is a reactant, -1, if the reaction is not relevant, 0
-
-        Sets:
-            reaction_matrix (np.ndarray): Array with the information needed
-        """
-        s_rxn_idx = np.zeros((len(self.initial_system),len(self.rate_map)))
-
-        for idx, rxn_subdict in enumerate(self.rate_map.values()):
-            s_rxn_idx[rxn_subdict["reac"],idx] = -1
-            s_rxn_idx[rxn_subdict["prod"],idx] = 1
-
-        self.reaction_matrix = s_rxn_idx
-
     def get_dydt(self, y) -> np.ndarray:
         """Gets the right-hand side of the ODE system for each individual species
         Basically, it computes the net generation/consumption rates for each individual species.
@@ -402,12 +387,21 @@ class System:
             dydt (np.array): 1D array of size (num_tracking_elements) with net generation / consumption
                 rates for all the states being tracked
         """
+        # Solution array
+        dydt = np.zeros(len(self.initial_system))      
+
         # Compute rates
         rates = self._calc_rates(y)
-        net_rates = rates[:,0] - rates[:,1]
 
-        # Solution array
-        return self.reaction_matrix @ net_rates
+        # Get rate per species in network
+        for idx, sub_dict in enumerate(self.rate_map.values()):
+            net_rate = rates[idx,0] - rates[idx,1] #("Forward rate - Backward rate")
+            for k in sub_dict["reac"]:
+                dydt[k] -= net_rate
+            for k in sub_dict["prod"]:
+                dydt[k] += net_rate
+
+        return dydt
 
     def get_forward_only(self, y) -> np.ndarray:
         """Computes the forward reaction rate only
@@ -420,130 +414,38 @@ class System:
         returns
             np.ndarray: Forward rate only in 1/s
         """
-        # Compute rates
-        f_rates = self._calc_rates(y)[:,1]
-
         # Solution array
-        return self.reaction_matrix @ f_rates
+        dydt = np.zeros(len(self.initial_system))      
 
-    #-----
-    # ODE jacobian
-    def _jac(self, y: np.ndarray) -> np.ndarray:
-        """Computes the Jacobian matrix for ALL the reactions in the network
-        with regards to each reaction (drxn/dtheta). Has the following form:
-        [[drxn_1/dtheta_1 , drxn_1/dtheta_2 ... drxn_1/dtheta_n]
-        [...]
-        [drxn_m/dtheta_1 , drxn_m/dtheta_2 ... drxn_m/dtheta_n]]
+        # Compute rates
+        rates = self._calc_rates(y)
 
-        Args:
-            y (np.ndarray): Array of compositions
+        # Get rate per species in network
+        for idx, sub_dict in enumerate(self.rate_map.values()):
+            frate = rates[idx,0] #forward only
+            for k in sub_dict["reac"]:
+                dydt[k] -= frate
+            for k in sub_dict["prod"]:
+                dydt[k] += frate
 
-        Returns:
-            np.ndarray: Jacobian matrix
-        """
-        # Get dri/dthetak matrix (shape = (n_rxns, n_elements being tracked))
-        jac = []
-        for rxn_name, rxn_dictio in self.rate_map.items(): # Iterate over ALL reactions
-            ri_dtheta = []
-            for species in self.index_map.values(): # Iterate over ALL species indices
-                # Count how many times the species appears as one of the reactants or products
-                reac_count = rxn_dictio["reac"].count(species)
-                prod_count = rxn_dictio["prod"].count(species)
+        return dydt
 
-                # If the species is present, we get a derivative, else, it is null
-                if reac_count == 0:
-                    fwd_derivative = 0
-                else:
-                    # Derivative is kfwd * count * theta_i ** (count-1) * prod(theta_j)
-                    reac_other = [el for el in rxn_dictio["reac"] if el != species]
-                    fwd_derivative = self.reactions[rxn_name].kfwd * reac_count * y[species] ** (reac_count - 1) * np.prod(y[reac_other])
-
-                # If the species is present, we get a value, else, the derivative is null
-                if prod_count == 0:
-                    rev_derivative = 0
-                else:
-                    #Derivative is krev * count * theta_i ** (count-1) * prod(theta_j)
-                    prod_other = [el for el in rxn_dictio["prod"] if el != species]
-                    rev_derivative = self.reactions[rxn_name].krev *prod_count * y[species] ** (prod_count - 1) * np.prod(y[prod_other])
-
-                # Now, we multiply the computed derivatives and add
-                ri_dtheta.append(fwd_derivative - rev_derivative)
-            jac.append(ri_dtheta)
-
-        return np.array(jac)
-
-    def get_jacobian(self, y: np.ndarray) -> np.ndarray:
-        """Returns the jacobian matrix for each element in the reaction network (not for each reaction).
-        In other words, the jacobian with regards to d_theta_i/dt (theta_i'):
-        [[dtheta_1'/theta_1, dtheta_1'/theta_2, ... dtheta_1'/theta_n]
-        ...
-        [dtheta_n'/theta_1, dtheta_n'/theta_2, ... dtheta_n'/theta_n]]
-
-        Args:
-            y (np.ndarray): Compositions
-
-        Returns:
-            np.ndarray: Jacobian matrix (shape equal to len(y),len(y))
-        """
-        # get jacobian matrix for reactions (dri/dthetak)
-        _jac = self._jac(y)
-        return self.reaction_matrix @ _jac
-
-    #-----
-    # Steady state solutions
-    def _ss_pre(self, y_surf):
-        """Common normalization (preliminar) step for steady-state functions"""
+    def _fun_ss(self, y_surf: np.array) -> np.ndarray:
+        if not isinstance(self.reactor, InfiniteDilutionReactor):
+            raise AttributeError("reactor must be of type pycatkin.classes.reactor.InfiniteDilutionReactor")
+        
         # Invariant compositions (flow gas)
         y_gas = self.initial_system[list(self.gas_indices)]
 
         # Total compositions to compute rates
         y = np.concat([y_gas, y_surf])
 
-        # # Mass balance of free sites
-        # for surf_name, idx in self.coverage_map.items():
-        #     surf_idx = self.index_map[surf_name]
-        #     other_idx = list(idx - {surf_idx})
-        #     y[surf_idx] = max(1 - sum(y[other_idx]), 0) #No negative coverage allowed
-        
-        return y
-
-    def _fun_ss(self, y_surf: np.array) -> np.ndarray:
-        """Modifies the dy/dt method to ONLY return the steady-state-relevant functions
-        Does the internal mass balance of sites
-
-        Args:
-            y_surf (np.array): Array of surface compositions
-
-        Returns:
-            np.ndarray: Surface coverage rate changes
-        """
-        #ygas
-        y_gas = self.initial_system[list(self.gas_indices)]
-        # Get y and normalize
-        y = self._ss_pre(y_surf)
         # Get rates for each species
         dydt = self.get_dydt(y)
+
         # Return the SURFACE ONLY dydt
         return dydt[len(y_gas):]
-
-    def _jac_ss(self, y_surf: np.array) -> np.ndarray:
-        """Modifies the main jacobian method to ONLY return the steady-state relevant 
-        jacobian matrix. Does the internal mass balance of sites
-
-        Args:
-            y_surf (np.array): Array of surface compositions
-
-        Returns:
-            np.ndarray: Jacobian matrix [len(y_surf), len(y_surf)]
-        """
-        #ygas
-        y_gas = self.initial_system[list(self.gas_indices)]
-        # Get y and normalize
-        y = self._ss_pre(y_surf)
-        # Get rates for each species
-        jac = self.get_jacobian(y)
-        # Return the SURFACE ONLY dydt
-        return jac[len(y_gas):,len(y_gas):]
+        
 
     def find_steady(self, max_iters: int = 30, y0: np.ndarray = None, method="lm") -> SteadyStateResults:
         """Finds the a steady-state solution.
@@ -561,13 +463,12 @@ class System:
         NOTE: I wasn't able to find a way to FORCE the site conservation. Nonetheless, I have found that, if
         you resubmit a failed calculation, you often find the correct root!
         """
-        # Randomized initial guess
+        # Randomized initial guess (take surface only)
         if y0 is None:
             y0 = self._normalize_y(np.random.uniform(size=len(self.initial_system)))
         elif len(y0) != len(self.initial_system):
             raise ValueError("Initial guess must have same length as initial guess... Include gas and surface species in here!")
         
-        # Take only the surface concentrations (gas-phase assumed invariant)
         y0 = y0[len(self.gas_indices):]
 
         # Preliminars
@@ -580,7 +481,7 @@ class System:
                 fun = self._fun_ss,
                 x0 = y0,
                 method = method,
-                jac = None if idx == 0 else self._jac_ss,
+                jac = False,
                 tol=1e-6*factor
             )
 

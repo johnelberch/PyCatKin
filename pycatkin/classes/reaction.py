@@ -118,7 +118,7 @@ class Reaction:
             self.krev = None if self.reversible else 0.0
 
             # Arrhenius type of reactions
-            if str(self.reac_type).upper() == "ARRHENIUS" or self.dGa_fwd:
+            if str(self.reac_type).upper() == "ARRHENIUS" or self.dGa_fwd: #dGa_fwd in J/mol
                 # Checks if it is a case of activated adsorption or desorption
                 if verbose and str(self.reac_type).upper() in ["ADSORPTION","DESORPTION"]:
                     print("Activated adsorption. Will use Arrhenius type of expression")
