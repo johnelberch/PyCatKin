@@ -159,7 +159,8 @@ class System:
         if self.verbose:
             print(f'Adding energy landscape {energy_landscape.name}')
 
-        self.energy_landscapes[energy_landscape.name] = energy_landscape
+        # self.energy_landscapes[energy_landscape.name] = energy_landscape
+        self.energy_landscapes = energy_landscape
 
     def build(self):
         """Once all the states have been added, it sets the System instance attributes
@@ -450,24 +451,36 @@ class System:
                 reac_count = rxn_dictio["reac"].count(species)
                 prod_count = rxn_dictio["prod"].count(species)
 
-                # If the species is present, we get a derivative, else, it is null
-                if reac_count == 0:
-                    fwd_derivative = 0
-                else:
-                    # Derivative is kfwd * count * theta_i ** (count-1) * prod(theta_j)
-                    reac_other = [el for el in rxn_dictio["reac"] if el != species]
-                    fwd_derivative = self.reactions[rxn_name].kfwd * reac_count * y[species] ** (reac_count - 1) * np.prod(y[reac_other])
+                # If the species is not part of the reaction, dr_i / dtheta_k = 0 and we continue
+                if reac_count == 0 and prod_count == 0:
+                    ri_dtheta.append(float(0))
+                    continue
+                # We have to check though we only got ONE positive number then
+                elif (reac_count > 0) and (prod_count > 0):
+                    raise RuntimeError(f"Species {species} appreas on both sides of reaction {rxn_name}")
 
-                # If the species is present, we get a value, else, the derivative is null
-                if prod_count == 0:
-                    rev_derivative = 0
+                # Now we compute the jacobian matrix
+                # Label and species count to use (avoiding double work)
+                if reac_count > 0:
+                    count_use, label_use, k_use, sign = (reac_count, "reac", self.reactions[rxn_name].kfwd, 1)
                 else:
-                    #Derivative is krev * count * theta_i ** (count-1) * prod(theta_j)
-                    prod_other = [el for el in rxn_dictio["prod"] if el != species]
-                    rev_derivative = self.reactions[rxn_name].krev *prod_count * y[species] ** (prod_count - 1) * np.prod(y[prod_other])
+                    count_use, label_use, k_use, sign = (prod_count, "prod", self.reactions[rxn_name].krev, -1)
 
-                # Now, we multiply the computed derivatives and add
-                ri_dtheta.append(fwd_derivative - rev_derivative)
+                # Other species involved in the reaction
+                other_species = [el for el in rxn_dictio[label_use] if el != species]
+    
+                # Sanity check (only one adsorbing or desorbing species)
+                is_gas = count_use if species in self.gas_indices else 0 #This will force only one gas species. Else, is_gas will be greater than 1 and raise AssertionError
+                other_gas = sum([1 for el in other_species if el in self.gas_indices])
+                assert int(is_gas + other_gas) <= 1, "Can't have multiple gas species in one reaction!"
+
+                # Derivative and gas terms
+                s_term = count_use*y[species]**(count_use-1) if int(count_use) > 1 else 1
+                P_term = self.p if other_gas == 1 else 1
+
+                # Putting everything together
+                ri_dtheta.append(sign * k_use * s_term * np.prod(y[other_species]) * P_term)
+
             jac.append(ri_dtheta)
 
         return np.array(jac)
@@ -600,7 +613,7 @@ class System:
                 print(f"iter {idx:3d}:  {' , '.join(str(x)[:8] for x in surf_sum)}", end="\r")
 
             # Check if calculation converged
-            if np.any(np.abs(np.array(surf_sum) - 1) > 0.05) or any(np.array(y0) < 0) or np.any(np.abs(self.get_dydt(y)) > 1e-6):
+            if np.any(np.abs(np.array(surf_sum) - 1) > 0.05) or any(np.round(np.array(y0),2) < 0) or np.any(np.abs(self.get_dydt(y)) > 1e-6):
                 y0 = self._normalize_y(np.abs(y))[len(self.gas_indices):]
                 factor = factor/10**(1/4) if factor > 1e-8 else factor #Tighter tol if needed
                 idx += 1
