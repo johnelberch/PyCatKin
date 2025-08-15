@@ -576,12 +576,19 @@ class System:
         success = False # Will be True if calculation converges
 
         while idx < max_iters:
-            sol = root(
+            # sol = root(
+            #     fun = self._fun_ss,
+            #     x0 = y0,
+            #     method = method,
+            #     jac = None if idx == 0 else self._jac_ss,
+            #     tol=1e-6*factor
+            # )
+            
+            sol = least_squares(
                 fun = self._fun_ss,
                 x0 = y0,
-                method = method,
-                jac = None if idx == 0 else self._jac_ss,
-                tol=1e-6*factor
+                jac = '2-point' if idx == 0 else self._jac_ss,
+                bounds = (np.zeros(len(y0)), np.ones(len(y0)))
             )
 
             y0 = sol.x
