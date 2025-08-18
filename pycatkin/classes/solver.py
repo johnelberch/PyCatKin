@@ -140,7 +140,7 @@ class SteadyStateSolver():
         # Return caped y to min tolerance
         return y_surf
 
-    def rank_score(
+    def _score(
         self,
         y_surf
         ) -> SolScore:
@@ -257,7 +257,7 @@ class SteadyStateSolver():
         x0 = self.ss_guess
 
         # Score the initial guess
-        s_keep = self.rank_score(x0)
+        s_keep = self._score(x0)
 
         #Iterate until the solution is found
         while iter_n < max_iters and not success:
@@ -284,11 +284,11 @@ class SteadyStateSolver():
             factor = factor/10**(1/4) if tol*factor < 1e-16 else factor #Tighter tol if needed until low cap is reached
 
             # Compare the scores
-            s_new = self.rank_score(x0)
+            s_new = self._score(x0)
             s_keep = self.compare_scores(s_keep, s_new, **test_convergence_kwargs)
 
         # Return the optimized coverages / convergences and the success flag
-        return SteadyStateResults(sol.x, success) if success else SteadyStateResults(s_keep.y_surf, success)
+        return SteadyStateResults(sol.x, success) if success else SteadyStateResults(s_keep.y_surf, False)
 
     def solve_minimize(
         self, 
@@ -337,7 +337,7 @@ class SteadyStateSolver():
         bounds = Bounds(lb=0,ub=1) if use_bounds else None
 
         # Score the initial guess
-        s_keep = self.rank_score(x0)
+        s_keep = self._score(x0)
 
         #Iterate until the solution is found
         while iter_n < max_iters and not success:
@@ -365,11 +365,11 @@ class SteadyStateSolver():
             factor = factor/10**(1/4) if tol*factor < 1e-16 else factor #Tighter tol if needed until low cap is reached
 
             # Compare the scores
-            s_new = self.rank_score(x0)
+            s_new = self._score(x0)
             s_keep = self.compare_scores(s_keep, s_new, **test_convergence_kwargs)
 
         # Return the optimized coverages / convergences and the success flag
-        return SteadyStateResults(sol.x, success) if success else SteadyStateResults(s_keep.y_surf, success)
+        return SteadyStateResults(sol.x, success) if success else SteadyStateResults(s_keep.y_surf, False)
 
     def solve_ode(
         self, 
