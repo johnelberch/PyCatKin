@@ -50,7 +50,8 @@ class System:
         xtol: float = 1e-8, 
         ftol: float = 1e-8, 
         verbose: bool = False,
-        y0 = None
+        y0 = None,
+        min_tol = 1e-32, # LOWEST bound for numerical stability
         ):
 
         # Parameters for ODE
@@ -71,6 +72,7 @@ class System:
         self.T = T
         self.p = p
         self.verbose = verbose
+        self.min_tol = min_tol
 
         # Blank assignments (to be populated when reading from input file)
         self.states = dict()
@@ -305,6 +307,8 @@ class System:
         Surface products MUST ADD to one (site conservation)
         Gas products MUST ADD to one (fractional concentration)
 
+        # NOTE: Caps the lowest concentration to self.min_threshold()
+
         Args:
             y (np.array): concentration array. Fractional concentration for gas species. Surface
                 coverage for surface species. Different sites are treated separatedly (a reservoir
@@ -320,7 +324,8 @@ class System:
         for surf_indices in self.coverage_map.values():
             y[list(surf_indices)] /= np.sum(y[list(surf_indices)])
 
-        return y
+        # Return caped y to min tolerance
+        return np.where(y < self.min_tol, self.min_tol, y)
 
     #-----
     # Computing rates
@@ -574,6 +579,8 @@ class System:
         NOTE: I wasn't able to find a way to FORCE the site conservation. Nonetheless, I have found that, if
         you resubmit a failed calculation, you often find the correct root!
         """
+        # Starting gas species
+        gas_id = len(self.gas_indices)
         # Randomized initial guess
         if y0 is None:
             y0 = self._normalize_y(np.random.uniform(size=len(self.initial_system)))
@@ -581,7 +588,7 @@ class System:
             raise ValueError("Initial guess must have same length as initial guess... Include gas and surface species in here!")
         
         # Take only the surface concentrations (gas-phase assumed invariant)
-        y0 = y0[len(self.gas_indices):]
+        y0 = y0[gas_id:]
 
         # Preliminars
         idx = 0 #N iterations
@@ -589,19 +596,12 @@ class System:
         success = False # Will be True if calculation converges
 
         while idx < max_iters:
-            # sol = root(
-            #     fun = self._fun_ss,
-            #     x0 = y0,
-            #     method = method,
-            #     jac = None if idx == 0 else self._jac_ss,
-            #     tol=1e-6*factor
-            # )
-            
-            sol = least_squares(
+            sol = root(
                 fun = self._fun_ss,
                 x0 = y0,
-                jac = '2-point' if idx == 0 else self._jac_ss,
-                bounds = (np.zeros(len(y0)), np.ones(len(y0)))
+                method = method,
+                jac = None if idx == 0 else self._jac_ss,
+                tol=1e-6*factor
             )
 
             y0 = sol.x
@@ -612,14 +612,28 @@ class System:
             if self.verbose:
                 print(f"iter {idx:3d}:  {' , '.join(str(x)[:8] for x in surf_sum)}", end="\r")
 
-            # Check if calculation converged
-            if np.any(np.abs(np.array(surf_sum) - 1) > 0.05) or any(np.round(np.array(y0),2) < 0) or np.any(np.abs(self.get_dydt(y)) > 1e-6):
-                y0 = self._normalize_y(np.abs(y))[len(self.gas_indices):]
+            ## Checks for convergence
+            # Test 1: Rate of surface species is zero
+            rate_check = np.any(np.abs(self.get_dydt(y))[gas_id:]) > 1e-6
+            
+            # Test 2: Surface coverage is positive
+            surfpos_check = any(np.round(np.array(y0),2) < 0)
+
+            # Test 3: Surface coverages add to one
+            surfone_check = np.any(np.abs(np.array(surf_sum) - 1) > 0.05)
+
+            # Test 4: The jacobian eigenvalues are negative numbers
+            # jac_check = 
+            
+            # If tests fail, renormalize y, tighten the tolerance and take another iteration step
+            if any([rate_check,surfpos_check,surfone_check]):
+                y0 = self._normalize_y(np.abs(y))[gas_id:] #Note: Could modify this, so it discards values lower than a threshold (will help with numeric convergence)
                 factor = factor/10**(1/4) if factor > 1e-8 else factor #Tighter tol if needed
                 idx += 1
             else:
                 success = True
-                break
+                break 
 
+        # Return the optimized coverages / convergences and the success flag
         y = np.concat((self.initial_system[list(self.gas_indices)], sol.x))
         return SteadyStateResults(y, success) 
