@@ -72,7 +72,7 @@ class SteadyStateSolver():
         rate_tol: float = 1e-4, 
         coverage_tol: float = 5e-2, 
         pos_jac_tol: float = 1e-2,
-        log: bool = True,
+        log: bool = False,
         **kwargs) -> bool:
         """Checks that a calculation is well converged
 
