@@ -1,3 +1,6 @@
+## Note
+This is an edited version of PyCatKin with updates on the Steady-State solution 
+
 # PyCatKin Tool v0.1.0 <img align="center" src="https://github.com/aab64/PyCatKin/blob/master/docs/source/avatar/avatar.png" width="200"/>
 
 [![DOI](https://zenodo.org/badge/313369000.svg)](https://zenodo.org/badge/latestdoi/313369000)
