@@ -25,3 +25,4 @@ kcaltoJ = 4184
 amutokg = 1.66053886e-27
 amuA2tokgm2 = 1.66053907e-47
 R = 8.31446262 #[J/K.mol]
+

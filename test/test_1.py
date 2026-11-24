@@ -1,4 +1,3 @@
-from pkg_resources import resource_filename, Requirement
 from pycatkin.functions.load_input import read_from_input_file
 from pycatkin.functions.presets import run, run_temperatures, run_energy_span_temperatures
 from pycatkin.functions.presets import save_state_energies, save_energies, save_energies_temperatures
@@ -6,6 +5,8 @@ import os
 import numpy as np
 import pandas as pd
 
+import pycatkin
+from util import resource_filename
 
 def test_1(tmpdir):
     """Regression test for DMTM examples.
@@ -15,18 +16,18 @@ def test_1(tmpdir):
     print('---------------------------------')
 
     print('(1/7) Loading input file')
-    infile = resource_filename(Requirement.parse("pycatkin"), 'examples/DMTM/input.json')
+    infile = resource_filename(pycatkin, 'examples/DMTM/input.json')
     assert(os.path.isfile(infile))
     sim_system = read_from_input_file(input_path=infile)
 
     print('(2/7) Reconfiguring paths for test')
-    for s in sim_system.snames:
+    for s in sim_system.states:
         if sim_system.states[s].path:
-            sim_system.states[s].path = resource_filename(Requirement.parse("pycatkin"),
+            sim_system.states[s].path = resource_filename(pycatkin,
                                                           'examples/DMTM/' +
                                                           sim_system.states[s].path)
         if sim_system.states[s].vibs_path:
-            sim_system.states[s].vibs_path = resource_filename(Requirement.parse("pycatkin"),
+            sim_system.states[s].vibs_path = resource_filename(pycatkin,
                                                                'examples/DMTM/' +
                                                                sim_system.states[s].vibs_path)
 

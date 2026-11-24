@@ -1,6 +1,5 @@
 from pycatkin.constants.physical_constants import *
 import copy
-import pickle
 import os
 import numpy as np
 
@@ -8,28 +7,20 @@ import numpy as np
 class Reactor:
 
     def __init__(self, name='reactor', volume=None, catalyst_area=None,
-                 residence_time=None, flow_rate=None, path_to_pickle=None):
+                 residence_time=None, flow_rate=None):
         """Initialises generic Reactor class.
-        If path_to_pickle is defined, the pickled object is loaded.
 
         """
 
-        if path_to_pickle:
-            assert (os.path.isfile(path_to_pickle))
-            newself = pickle.load(open(path_to_pickle, 'rb'))
-            assert (isinstance(newself, Reactor))
-            for att in newself.__dict__.keys():
-                setattr(self, att, getattr(newself, att))
-        else:
-            self.name = name
-            self.volume = volume
-            self.catalyst_area = catalyst_area
-            self.residence_time = residence_time
-            self.flow_rate = flow_rate
-            self.scaling = None
-            self.is_adsorbate = None
-            self.is_gas = None
-            self.dynamic_indices = None
+        self.name = name
+        self.volume = volume
+        self.catalyst_area = catalyst_area
+        self.residence_time = residence_time
+        self.flow_rate = flow_rate
+        self.scaling = None
+        self.is_adsorbate = None
+        self.is_gas = None
+        self.dynamic_indices = None
 
     def set_scaling(self, T):
         """Scaling from per site per second to per Pa per second.
@@ -77,13 +68,6 @@ class Reactor:
         self.dynamic_indices = copy.deepcopy(adsorbate_indices)
         return self.dynamic_indices
 
-    def save_pickle(self, path=None):
-        """Save the reactor as a pickle object.
-
-        """
-
-        path = path if path else ''
-        pickle.dump(self, open(path + 'reactor_' + self.name + '.pckl', 'wb'))
 
 
 class InfiniteDilutionReactor(Reactor):

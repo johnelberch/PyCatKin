@@ -1,493 +1,364 @@
-from pycatkin.constants.physical_constants import *
-import os
-import pickle
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from typing import Literal
+
 import copy
-import ase.io
-from ase.visualize import view
+
 import numpy as np
+from pycatkin.constants.physical_constants import (
+    JtoeV,
+    amuA2tokgm2,
+    amutokg,
+    eVtokJ,
+    h,
+    kB,
+)
+from pycatkin.settings import ScalingStateSettings, StateSettings
+from pydantic import TypeAdapter
+
+
+class BaseState(ABC):
+    def __init__(self, Gelec: float|None, state_type: str, name: str):
+        """Basic state definition (defines the bare-bones contract all State classes must follow)
+
+        Args:
+            Gelec (float | None): Electronic energy (computed with DFT, in eV)
+            state_type (str): Descriptor identifying the type of the state
+            name (str): Unique nametag for this state
+        """
+        self.Gelec = Gelec
+        self._state_type = state_type
+        self._name = name
+        self._Gfree = None
+
+    @abstractmethod
+    def get_free_energy(self) -> float:
+        """Computes the Gibbs Free Energy"""
+        pass
+
+    @abstractmethod
+    @property
+    def name(self) -> str:
+        return self._name
+    
+    @abstractmethod
+    @property
+    def Gfree(self) -> float:
+        return self._Gfree
+
+    @abstractmethod
+    @property
+    def state_type(self) -> str:
+        return self._state_type
+    
+
+def _preprocess_frequencies(freq: Sequence[float], truncate_freq:bool = True, cutoff:float = 12.4 * 1e-3 / (h * JtoeV)) -> Sequence[float]:
+    """Helping function to preprocess frequencies in frequency-relevant classes
+
+    Args:
+        freq (Sequence[float]): Vibrational Frequencies in [1/s]
+        truncate_freq (bool, optional): Trim the frequencies below cutoff. Defaults to True.
+        cutoff (float, optional): Defaults to 0.0124 eV [100 cm^-1].
+
+    Returns:
+        Sequence[float]: processed frequencies
+    """
+    sorted_freq = np.array(sorted(freq, reverse=True))
+    if truncate_freq:
+        a = sorted_freq.copy()
+        sorted_freq = np.where(a >= cutoff, a, cutoff)
+    return sorted_freq
+
+
+class SurfaceState(BaseState):
+    def __init__(self, Gelec: float, state_type: str, name: Literal["surface"]):
+        """Clean surface state class.
+
+        Raises:
+            ValueError: State type not equal to 'surface'
+        """
+        if state_type.lower() != "surface":
+            raise ValueError(f"`SurfaceState` can only accept `state_type = 'surface'` but `{state_type}` was provided")
+        super().__init__(self, Gelec, state_type, name)
+
+    def get_free_energy(self) -> float:
+        return self.Gelec
+
+    @property
+    def name(self) -> str:
+        return self._name
+    
+    @property
+    def Gfree(self) -> float:
+        return self._Gelec
+
+    @property
+    def state_type(self) -> str:
+        return self.surface
+    
+
+#TODO
+class AdsorbedState(BaseState):
+    def __init__(self,
+                Gelec: float,
+                state_type: Literal["adsorbate", "TS"],
+                name:str,
+                freq: Sequence[float],
+                ifreq: Sequence[float] | None = None,
+                truncate_freq: bool = True):
+        """_summary_
+
+        Args:
+            Gelec (float): _description_
+            state_type (Literal[&quot;adsorbate&quot;, &quot;TS&quot;]): _description_
+            name (str): _description_
+            freq (Sequence[float]): _description_
+            ifreq (Sequence[float] | None, optional): _description_. Defaults to None.
+            truncate_freq (bool, optional): _description_. Defaults to True.
+
+        Raises:
+            AttributeError: _description_
+
+        Returns:
+            _type_: _description_
+        """
 
 
 class State:
+    def __init__(
+            self, 
+            state_type: str,
+            Gelec: float,
+            truncate_freq: bool = True,
+            freq: Sequence[float] | None = None,
+            i_freq: Sequence[float] | None = None,
+            mass: float | None = None,
+            inertia: Sequence[float] | None = None,
+            sigma: float | None = None
+            ):
+        """Foundational class to define reaction states"""
 
-    def __init__(self, state_type=None, name=None, path=None, vibs_path=None, sigma=None,
-                 mass=None, inertia=None, gasdata=None, add_to_energy=None, path_to_pickle=None,
-                 read_from_alternate=None, truncate_freq=True, energy_source=None, freq_source=None,
-                 freq=None, i_freq=None, Gelec=None, Gzpe=None, Gvibr=None, Gtran=None, Grota=None, Gfree=None):
-        """Initialises State class.
-        State class stores the species name and atoms object,
-        the electronic energy and vibrational frequencies from DFT,
-        the degrees of freedom contributions to the free energy.
-        If path_to_pickle is defined, the pickled object is loaded.
+        if isinstance(settings, dict):
+            ta = TypeAdapter(StateSettings)
+            settings = ta.validate_python(settings)
 
+        # Unpack all fields from the Pydantic model directly onto the class instance
+        self.__dict__.update(settings.model_dump())
+
+        # Gfree Initializer
+        self._Gfree = None
+
+
+    @property
+    def Gfree(self):
+        if self._Gfree is None:
+            raise AttributeError("Gfree has not been computed yet and it's being accessed. Use `State.get_free_energy(T,P)` first")
+        return self._Gfree
+
+
+    def get_free_energy(self, T:float, p:float) -> float:
+        """Computes the free energy and returns it in [eV]
+
+        Args:
+            T (float): Temperature in [K]
+            p (float): Pressure in [Pa]
+
+        Returns:
+            float: Gibbs free energy of the State
         """
+        Gfree = self.Gelec
 
-        if path_to_pickle:
-            assert (os.path.isfile(path_to_pickle))
-            newself = pickle.load(open(path_to_pickle, 'rb'))
-            assert (isinstance(newself, State))
-            for att in newself.__dict__.keys():
-                setattr(self, att, getattr(newself, att))
-        else:
-            if name is None:
-                name = os.path.basename(path)
-            self.state_type = state_type
-            self.name = name
-            self.path = path
-            self.vibs_path = vibs_path
-            self.sigma = sigma
-            self.mass = mass
-            self.inertia = inertia
-            self.gasdata = gasdata
-            self.add_to_energy = add_to_energy
-            self.read_from_alternate = read_from_alternate
-            self.truncate_freq = truncate_freq
-            self.energy_source = energy_source
-            self.freq_source = freq_source
-            self.Gelec = Gelec
-            self.Gzpe = Gzpe
-            self.Gtran = Gtran
-            self.Gvibr = Gvibr
-            self.Grota = Grota
-            self.Gfree = Gfree
-            self.tran_source = None if self.Gtran is None else 'inputfile'
-            self.rota_source = None if self.Grota is None else 'inputfile'
-            self.vibr_source = None if self.Gvibr is None else 'inputfile'
-            self.free_source = None if self.Gfree is None else 'inputfile'
-            self.freq = None
-            self.i_freq = None
-            self.shape = None
-            self.atoms = None
-            if freq is not None:
-                self.freq_source = 'inputfile'
-                self.freq = np.array(sorted(freq, reverse=True))
-                if i_freq is not None:
-                    self.i_freq = np.array(sorted(i_freq, reverse=True))
-            if self.state_type == 'gas':
-                assert(self.sigma is not None)
+        # For instances with frequencies, compute the vibrational contribution
+        if getattr(self, "freq", None) is not None:
+            Gfree += self._calc_vibrational_contrib(T=T)
 
-                if self.inertia is not None:
-                    inertia_cutoff = 1.0e-12
-                    self.inertia = np.array([i if i > inertia_cutoff else
-                                             0.0 for i in self.inertia])
-                    self.shape = len([i for i in self.inertia if i > 0.0])
-                    if self.shape < 2:
-                        print('Too many components of the moments of inertia are zero.'
-                              'Please specify atoms differently.')
+        # For gas-phase instances, compute translational and rotational modes as well
+        if self.state_type == "gas":
+            Gfree += self._calc_translational_contrib(T=T, p=p)
+            Gfree += self._calc_rotational_contrib(T=T)
 
-    def get_atoms(self):
-        """Reads OUTCAR file from path and extracts atoms object.
+        # self._Gfree = Gfree
+        return Gfree
 
-        """
 
-        if isinstance(self.read_from_alternate, dict):
-            if 'get_atoms' in self.read_from_alternate.keys():
-                self.atoms, self.mass, self.inertia = self.read_from_alternate['get_atoms']()
-
-        if not self.atoms:
-            assert(self.path is not None)
-            outcar_path = self.path + '/OUTCAR'
-            if not os.path.isfile(outcar_path):
-                outcar_path = self.path
-            assert(os.path.isfile(outcar_path))
-            self.atoms = ase.io.read(outcar_path, format='vasp-out')
-            self.mass = sum(self.atoms.get_masses())
-            if self.state_type == 'gas':
-                self.inertia = self.atoms.get_moments_of_inertia()
-
+    def _truncate(self):
+        """Truncates some vibrational modes if required"""
         if self.state_type == 'gas':
-            # Truncate inertial components likely resulting from low precision
-            inertia_cutoff = 1.0e-12
-            self.inertia = np.array([i if i > inertia_cutoff else
-                                     0.0 for i in self.inertia])
-            self.shape = len([i for i in self.inertia if i > 0.0])
-            if self.shape < 2:
-                print('Too many components of the moments of inertia are zero.'
-                      'Please specify atoms differently.')
+            ntrunc = self.shape
+        elif self.state_type == 'TS' and len(self.i_freq) == 0:
+            ntrunc = 1
+        else:
+            ntrunc = 0
+        nfreqs = self.freq.shape[0] - ntrunc
+        return copy.deepcopy(self.freq[0:nfreqs])
 
-    def get_vibrations(self, verbose=False):
-        """Reads vibrations file from path and extracts frequencies.
 
-        """
+    def _calc_zpe(self):
+        """Compute the zero-point energy contribution (units consistent with `self.get_free_energy`)"""
+        use_freq = self._truncate()
+        return 0.5 * h * sum(use_freq) * JtoeV
 
-        if self.freq_source == 'datafile':
-            with open(self.vibs_path, 'r') as file:
-                lines = file.readlines()
-                self.freq = np.array([float(line.split('=')[1].split('Hz')[0])
-                                      for line in lines
-                                      if '/' not in line])
-                self.i_freq = np.array([float(line.split('=')[1].split('Hz')[0])
-                                        for line in lines
-                                        if '/' in line])
-        elif self.freq_source != 'inputfile':
-            freq = None
-            i_freq = None
 
-            if isinstance(self.read_from_alternate, dict):
-                if 'get_vibrations' in self.read_from_alternate.keys():
-                    freq, i_freq = copy.deepcopy(self.read_from_alternate['get_vibrations']())
+    def _calc_vibrational_contrib(self, T):
+        """Compute the vibrational energy contribution to the free energy (units consistent with `self.get_free_energy`)"""
+        Gzpe = self._calc_zpe()
+        use_freq = self._truncate()
 
-            if not freq:
-                if self.vibs_path is not None:
-                    freq_path = self.vibs_path + '/log.vib'
-                elif self.path is not None:
-                    freq_path = self.path + '/log.vib'
-                else:
-                    freq_path = None
+        if sum(use_freq) != 0.0:
+            return Gzpe + (kB * T * sum(np.log(1 - np.exp(-use_freq * h / (kB * T))))) * JtoeV
+        else:
+            return Gzpe
 
-                if freq_path is not None:
-                    if os.path.isfile(freq_path):
-                        if verbose:
-                            print('Checking log.vib for frequencies')
-                        with open(freq_path, 'r') as fd:
-                            lines = fd.readlines()
-                        initat = 0
-                        endat = 0
-                        for lind, line in enumerate(lines):
-                            if '#' in line:
-                                initat = lind + 2
-                                endat = 0
-                            if lind > initat and not endat and '---' in line:
-                                endat = lind - 1
-                        freq = [(float(line.strip().split()[1]) * 1e-3 / (h * JtoeV))
-                                for line in lines[initat:endat + 1]
-                                if 'i' not in line]
-                        i_freq = [(float(line.strip().split()[1].split('i')[0]) * 1e-3 / (h * JtoeV))
-                                  for line in lines[initat:endat + 1]
-                                  if 'i' in line]
-                    else:
-                        if verbose:
-                            print('Checking OUTCAR for frequencies')
-                        assert(self.path is not None)
-                        index = -8
-                        freq_path = self.path + '/OUTCAR'
-                        if not os.path.isfile(freq_path):
-                            freq_path = self.path
-                        assert(os.path.isfile(freq_path))
-                        freq = []
-                        i_freq = []
-                        firstcopy = 0
-                        with open(freq_path, 'r') as fd:
-                            lines = fd.readlines()
-                        for line in lines:
-                            data = line.split()
-                            if 'THz' in data:
-                                if (firstcopy + 1) == int(data[0]):
-                                    fHz = float(data[index]) * 1.0e12
-                                    if 'f/i=' not in data and 'f/i' not in data:
-                                        freq.append(fHz)
-                                    else:
-                                        i_freq.append(fHz)
-                                    firstcopy = int(data[0])
-                                else:
-                                    break
-            if freq is not None:
-                if self.truncate_freq:
-                    for f in range(len(freq)):
-                        if (freq[f] * h * JtoeV * 1e3) < 12.4:
-                            freq[f] = 12.4 * 1e-3 / (h * JtoeV)
-                            if verbose:
-                                print('Truncating small freq %1.2f to 12.4 meV' %
-                                      (freq[f] * h * JtoeV * 1e3))
-                    # Check correct DOF
-                    n_freq = len(freq)
-                    n_dof = len(freq) + len(i_freq)  # 3 * N_moving_atoms
-                    if self.state_type == 'gas':
-                        n_dof -= 3  # Translational DOF
-                    if n_freq < n_dof:
-                        if verbose:
-                            print('Incorrect number of frequencies! n_dof = %1.0f and n_freq = %1.0f' %
-                                  (n_dof, n_freq))
-                            print('Adding %1.0f extra frequencies of 12.4 meV...' %
-                                  (n_dof - n_freq))
-                        freq += [12.4 * 1e-3 / (h * JtoeV)
-                                 for f in range(n_dof - n_freq)]
 
-                self.freq = np.array(sorted(freq, reverse=True))
-                self.i_freq = np.array(i_freq)
+    def _calc_translational_contrib(self, T, p):
+        """Calculates translational contribution to free energy (units consistent with `self.get_free_energy`)"""
+        return (-kB * T * np.log((kB * T / p) * pow(2 * np.pi * (self.mass * amutokg) * kB * T / (h ** 2), 1.5))) * JtoeV
+
+
+    def _calc_rotational_contrib(self, T):
+        """Calculates rotational contribution to free energy (units consistent with `self.get_free_energy`)
+        Accounts for linear and non-linear molecules"""
+        I = self.inertia * amuA2tokgm2
+
+        if self.shape == 2:
+            I = np.sqrt(np.prod([I[i] for i in range(len(I)) if I[i] != 0]))
+            return (-kB * T * np.log(8 * np.pi * np.pi * kB * T * I / (self.sigma * h ** 2))) * JtoeV
+        else:
+            return (-kB * T * np.log((np.sqrt(np.pi) / self.sigma) * pow(8 * np.pi * np.pi * kB * T / (h ** 2), 1.5) * np.sqrt(np.prod(I)))) * JtoeV
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#     state_type: str = Field(description="Identified for the state")
+#     Gelec: float = Field(description="Electronic energy computed by DFT")
+
+# vib
+#     truncate_freq: bool = Field(default=True, description="Flag to remove vibrational frequencies below 12.4 meV")
+#     freq: Sequence[float] = Field(description="Vibrational frequencies")
+
+# gas
+#     mass: float = Field(description="Molecular Mass of gas-phase species", default=None)
+#     inertia: Sequence[float] = Field(description="Moment of inertia of gas-phase species", default=None)
+#     sigma: float = Field(description="Rotational symmetry number")
+
+# transition_state
+#     i_freq: float | Sequence[float] = Field(description="Imaginary vibrational frequency")
+
+
+
+
+# (bare surfaces, adsorbed species, transition states, and gas-phase molecules)
+
+
+# TODO: Need to edit to receive the reaction somehow... think about it
+class ScalingState(State):
+    def __init__(self, settings: ScalingStateSettings | dict):
+        """Computes energies based on reference reactions (e.g., adsorption energies).
+        The reference reactions must be initialized first"""
+        if isinstance(settings, dict):
+            ta = TypeAdapter(ScalingStateSettings)
+            settings = ta.validate_python(settings)
+
+        self.__dict__.update(settings.model_dump())
+
+        # Gelec is NOT computed here. It will be computed on demand.
+        self.Gelec = None
+        self._reactions_bound = False
+
+    def bind_reactions(self, reactions: dict):
+        """Resolve reaction-name strings to Reaction objects. Call once after all reactions exist."""
+        if self._reactions_bound:
+            return
+        for r in self.scaling_reactions.values():
+            if isinstance(r['reaction'], str):
+                r['reaction'] = reactions[r['reaction']]
+            if 'multiplicity' not in r:
+                r['multiplicity'] = 1.0
+        self._reactions_bound = True
+
+    def _calc_electronic_energy(self):
+        """Compute electronic energy fresh each call (reads current sC/sO Gelec)."""
+        Gelec = self.scaling_coeffs['intercept']
+        for idx, r in enumerate(self.scaling_reactions.values()):
+            rxn = r['reaction']
+            dEIS = rxn.get_reaction_energy(T=273, p=1.0e5, etype='electronic') / (eVtokJ * 1.0e3)
+            if self.dereference:
+                ref_EIS = sum([reac.Gelec for reac in rxn.reactants])
             else:
-                if verbose:
-                    print('Warning. Could not find any frequencies.')
-                self.freq = np.zeros((1, 1))
-                self.i_freq = []
-
-    def save_vibrations(self, vibs_path=''):
-        """Save vibrations to a file (in Hz).
-
-        """
-
-        assert(self.freq is not None)
-        assert(self.i_freq is not None)
-
-        if vibs_path != '':
-            if not os.path.isdir(vibs_path):
-                print('Directory does not exist. Will try creating it...')
-                os.mkdir(vibs_path)
-
-        with open(vibs_path + self.name + '_frequencies.dat', 'w') as file:
-            for i, f in enumerate(self.freq):
-                file.write('%1.0f f = %1.15e Hz\n' % (i, f))
-            for j, f in enumerate(self.i_freq):
-                file.write('%1.0f f/i = %1.15e Hz\n' % (i + j, f))
-
-    def save_energy(self, path=''):
-        """Save electronic energy to a file (in eV).
-
-        """
-
-        assert(self.Gelec is not None)
-
-        if path != '':
-            if not os.path.isdir(path):
-                print('Directory does not exist. Will try creating it...')
-                os.mkdir(path)
-
-        with open(path + self.name + '_energy.dat', 'w') as file:
-            file.write('%1.15e eV\n' % self.Gelec)
-
-    def calc_electronic_energy(self, verbose=False):
-        """Calculates electronic energy.
-
-        Saves value in eV."""
-
-        if self.Gelec is None:
-            if self.energy_source == 'datafile':
-                with open(self.path, 'r') as file:
-                    lines = file.readlines()
-                    self.Gelec = float(lines[0].split('eV')[0])
-            else:
-                if isinstance(self.read_from_alternate, dict):
-                    if 'get_electronic_energy' in self.read_from_alternate.keys():
-                        self.Gelec = self.read_from_alternate['get_electronic_energy']()
-                if self.Gelec is None:
-                    if self.atoms is None:
-                        self.get_atoms()
-                    self.Gelec = self.atoms.get_potential_energy(force_consistent=True)
-
-    def calc_zpe(self, verbose=False):
-        """Calculates zero point energy.
-
-        Saves value in eV."""
-
-        if self.Gzpe is None:
-            if self.freq is None:
-                self.get_vibrations(verbose=verbose)
-
-            # Truncate some modes if required
-            if self.state_type == 'gas':
-                if self.shape is None:
-                    self.get_atoms()
-                ntrunc = self.shape
-            elif self.state_type == 'TS' and len(self.i_freq) == 0:
-                ntrunc = 1
-            else:
-                ntrunc = 0
-            nfreqs = self.freq.shape[0] - ntrunc
-            use_freq = copy.deepcopy(self.freq[0:nfreqs])
-
-            self.Gzpe = 0.5 * h * sum(use_freq) * JtoeV
-
-    def calc_vibrational_contrib(self, T, verbose=False):
-        """Calculates vibrational contribution to free energy.
-
-        Saves value in eV."""
-
-        if self.vibr_source is None:
-            if self.Gzpe is None:
-                self.calc_zpe(verbose=verbose)
-
-            if self.freq is None:
-                self.get_vibrations(verbose=verbose)
-
-            # Truncate some modes if required
-            if self.state_type == 'gas':
-                if self.shape is None:
-                    self.get_atoms()
-                ntrunc = self.shape
-            elif self.state_type == 'TS' and len(self.i_freq) == 0:
-                ntrunc = 1
-            else:
-                ntrunc = 0
-            nfreqs = self.freq.shape[0] - ntrunc
-            use_freq = copy.deepcopy(self.freq[0:nfreqs])
-
-            if sum(use_freq) != 0.0:
-                self.Gvibr = self.Gzpe + (kB * T * sum(np.log(1 - np.exp(-use_freq * h / (kB * T))))) * JtoeV
-            elif self.Gzpe is not None:
-                self.Gvibr = self.Gzpe
-            else:
-                self.Gvibr = 0.0
-
-    def calc_translational_contrib(self, T, p, verbose=False):
-        """Calculates translational contribution to free energy.
-
-        Saves value in eV."""
-
-        if self.tran_source is None:
-            if self.state_type == 'gas':
-                if self.mass is None:
-                    self.get_atoms()
-                self.Gtran = (-kB * T * np.log((kB * T / p) *
-                                               pow(2 * np.pi * (self.mass * amutokg) * kB * T / (h ** 2),
-                                                   1.5))) * JtoeV
-            else:
-                self.Gtran = 0.0
-
-        if self.gasdata is not None:
-            for s in range(len(self.gasdata['fraction'])):
-                self.gasdata['state'][s].calc_translational_contrib(T=T, p=p, verbose=verbose)
-                self.Gtran += self.gasdata['fraction'][s] * self.gasdata['state'][s].Gtran
-
-    def calc_rotational_contrib(self, T, verbose=False):
-        """Calculates rotational contribution to free energy
-        accounting for linear/non-linear molecule.
-
-        Saves value in eV."""
-
-        if self.rota_source is None:
-            if self.state_type == 'gas':
-                if self.inertia is None or self.shape is None:
-                    self.get_atoms()
-                I = self.inertia * amuA2tokgm2
-                if self.shape == 2:
-                    I = np.sqrt(np.prod([I[i] for i in range(len(I))
-                                         if I[i] != 0]))
-                    self.Grota = (-kB * T * np.log(8 * np.pi * np.pi * kB * T * I / (self.sigma * h ** 2))) * JtoeV
-                else:
-                    self.Grota = (-kB * T * np.log((np.sqrt(np.pi) / self.sigma) *
-                                                   pow(8 * np.pi * np.pi * kB * T / (h ** 2), 1.5) *
-                                                   np.sqrt(np.prod(I)))) * JtoeV
-            else:
-                self.Grota = 0.0
-
-        if self.gasdata is not None:
-            for s in range(len(self.gasdata['fraction'])):
-                self.gasdata['state'][s].calc_rotational_contrib(T=T, verbose=verbose)
-                self.Grota += self.gasdata['fraction'][s] * self.gasdata['state'][s].Grota
-
-    def calc_free_energy(self, T, p, verbose=False):
-        """Calculates free energy.
-
-        Saves value in eV."""
-
-        if self.free_source is None:
-            self.calc_electronic_energy(verbose=verbose)
-            self.calc_vibrational_contrib(T=T, verbose=verbose)
-            self.calc_translational_contrib(T=T, p=p, verbose=verbose)
-            self.calc_rotational_contrib(T=T, verbose=verbose)
-            self.Gfree = self.Gelec + self.Gtran + self.Grota + self.Gvibr
-
-        if self.add_to_energy:
-            self.Gfree += self.add_to_energy
-
-            if self.free_source == 'inputfile':
-                self.add_to_energy = None
-
-        if verbose:
-            print((self.name + ': %1.2f eV') % self.Gfree)
+                ref_EIS = 0.0
+            Gelec += r['multiplicity'] * (self.scaling_coeffs['gradient'][idx] * dEIS + ref_EIS)
+        return Gelec
 
     def get_free_energy(self, T, p, verbose=False):
-        """Returns the free energy in eV.
+        if self.use_descriptor_as_reactant:
+            assert self.scaling_reactions is not None
+            assert self.scaling_coeffs is not None
 
-        """
-
-        self.calc_free_energy(T=T, p=p, verbose=verbose)
-
-        return self.Gfree
-
-    def get_potential_energy(self, verbose=False):
-        """Returns the potential energy in eV.
-
-        """
-
-        self.calc_electronic_energy(verbose=verbose)
-
-        return self.Gelec
-
-    def set_energy_modifier(self, modifier):
-        """Sets modifier to the energy.
-
-        Updates stored value in eV."""
-
-        self.add_to_energy = modifier
-
-    def save_pdb(self, path=None):
-        """Saves the atoms object as a pdb structure file.
-
-        """
-
-        if self.atoms is None:
-            self.get_atoms()
-
-        path = path if path else ''
-
-        if path is not None and path != '':
-            if not os.path.isdir(path):
-                print('Directory does not exist. Will try creating it...')
-                os.mkdir(path)
-
-        ase.io.write(path + self.name + '.pdb', self.atoms,
-                     format='proteindatabank')
-
-    def save_pickle(self, path=None):
-        """Save the state as a pickle object.
-
-        """
-
-        path = path if path else ''
-
-        if path is not None and path != '':
-            if not os.path.isdir(path):
-                print('Directory does not exist. Will try creating it...')
-                os.mkdir(path)
-
-        pickle.dump(self, open(path + 'state_' + self.name + '.pckl', 'wb'))
-
-    def view_atoms(self, rotation='', path=None):
-        """Views the atoms object using the ASE visualizer.
-        If path is not None, saves as a png.
-
-        """
-
-        if self.atoms is None:
-            self.get_atoms()
-
-        view(self.atoms)
-
-        if path is not None and path != '':
-            if not os.path.isdir(path):
-                print('Directory does not exist. Will try creating it...')
-                os.mkdir(path)
-
-        if path:
-            ase.io.write(path + self.name + '.png', self.atoms,
-                         format='png', rotation=rotation)
+            Gelec = self.scaling_coeffs['intercept']
+            Gfree = 0.0
+            for idx, r in enumerate(self.scaling_reactions.values()):
+                rxn = r['reaction']
+                dEIS = rxn.get_reaction_energy(T=T, p=p, etype='electronic') / (eVtokJ * 1.0e3)
+                dGIS = rxn.get_reaction_energy(T=T, p=p, etype='free') / (eVtokJ * 1.0e3)
+                if self.dereference:
+                    ref_EIS = sum([reac.Gelec for reac in rxn.reactants])
+                    ref_GIS = sum([reac.get_free_energy(T=T, p=p) for reac in rxn.reactants])
+                else:
+                    ref_EIS = 0.0
+                    ref_GIS = 0.0
+                Gelec += r['multiplicity'] * (self.scaling_coeffs['gradient'][idx] * dEIS + ref_EIS)
+                Gfree += r['multiplicity'] * (-ref_EIS - dEIS + dGIS + ref_GIS)
+            Gfree += Gelec
+            return Gfree
+        else:
+            return super(ScalingState, self).get_free_energy(T=T, p=p)
 
 
 class ScalingState(State):
+    def __init__(self, settings: ScalingStateSettings | dict):
+        """Alternative State Class that leverages linear scaling relationships to compute energies
+        It leverages Pydantic Schemas to ensure input consistency and a cleaner assignment of attributes. Check the schema for info on the fields"""
 
-    def __init__(self, state_type=None, name=None, path=None, vibs_path=None, sigma=None,
-                 mass=None, inertia=None, gasdata=None, add_to_energy=None, path_to_pickle=None,
-                 read_from_alternate=None, truncate_freq=True, energy_source=None, freq_source=None,
-                 freq=None, i_freq=None, Gelec=None, Gzpe=None, Gvibr=None, Gtran=None, Grota=None, Gfree=None,
-                 scaling_coeffs=None, scaling_reactions=None, dereference=False,
-                 use_descriptor_as_reactant=False):
-        """Initialises scaling relation state class.
+        if isinstance(settings, dict):
+            ta = TypeAdapter(ScalingStateSettings)
+            settings = ta.validate_python(settings)
 
-        """
+        # Unpack all fields from the Pydantic model directly onto the class instance
+        self.__dict__.update(settings.model_dump())
 
-        super(ScalingState, self).__init__(state_type=state_type, name=name, path=path, vibs_path=vibs_path,
-                                           sigma=sigma, mass=mass, inertia=inertia, gasdata=gasdata,
-                                           add_to_energy=add_to_energy, path_to_pickle=path_to_pickle,
-                                           read_from_alternate=read_from_alternate, truncate_freq=truncate_freq,
-                                           energy_source=energy_source, freq_source=freq_source,
-                                           freq=freq, i_freq=i_freq, Gelec=Gelec, Gzpe=Gzpe, Gvibr=Gvibr, Gtran=Gtran,
-                                           Grota=Grota, Gfree=Gfree)
-        self.scaling_coeffs = scaling_coeffs
-        self.scaling_reactions = scaling_reactions
-        self.dereference = dereference
-        self.use_descriptor_as_reactant = use_descriptor_as_reactant
+        # Compute the electronic energy
+        self.Gelec = self._calc_electronic_energy()
 
-    def calc_electronic_energy(self, verbose=False):
+
+    def _calc_electronic_energy(self):
         """Modified version of calc_electronic_energy method.
 
         This patch allows the user to take multiple coefficients in list format.
@@ -495,28 +366,22 @@ class ScalingState(State):
 
         Saves value in eV.
         """
-        assert(self.scaling_reactions is not None)
-        assert(self.scaling_coeffs is not None)
-
-        self.Gelec = self.scaling_coeffs['intercept']
+        Gelec = self.scaling_coeffs['intercept']
 
         for idx, r in enumerate(self.scaling_reactions.values()):
-            dEIS = r['reaction'].get_reaction_energy(T=273,
-                                                        p=1.0e5,
-                                                        verbose=verbose,
-                                                        etype='electronic') / (eVtokJ * 1.0e3)
+            dEIS = r['reaction'].get_reaction_energy(T=273, p=1.0e5, etype='electronic') / (eVtokJ * 1.0e3)
             if self.dereference:
                 ref_EIS = sum([reac.Gelec for reac in r['reaction'].reactants])
             else:
                 ref_EIS = 0.0
-            if 'multiplicity' not in r.keys():
+            if 'multiplicity' not in r:
                 r['multiplicity'] = 1.0
-            self.Gelec += r['multiplicity'] * (self.scaling_coeffs['gradient'][idx] * dEIS + ref_EIS)
+            Gelec += r['multiplicity'] * (self.scaling_coeffs['gradient'][idx] * dEIS + ref_EIS)
 
-        if verbose:
-            print((self.name + ' elec: %1.2f eV') % self.Gelec)
+        return Gelec
 
-    def calc_free_energy(self, T, p, verbose=False):
+
+    def get_free_energy(self, T, p):
         """This patch allows the user to take multiple coefficients in list format.
         IT ASSUMES that the ordering is consistent (i.e., C, O)
 
@@ -529,62 +394,26 @@ class ScalingState(State):
             assert(self.scaling_reactions is not None)
             assert(self.scaling_coeffs is not None)
 
-            self.Gelec = self.scaling_coeffs['intercept']
-            self.Gfree = 0.0
+            Gelec= self.scaling_coeffs['intercept']
+            Gfree = 0.0
 
             for idx, r in enumerate(self.scaling_reactions.values()):
-                dEIS = r['reaction'].get_reaction_energy(T=T,
-                                                            p=p,
-                                                            verbose=verbose,
-                                                            etype='electronic') / (eVtokJ * 1.0e3)
-                dGIS = r['reaction'].get_reaction_energy(T=T,
-                                                            p=p,
-                                                            verbose=verbose,
-                                                            etype='free') / (eVtokJ * 1.0e3)
+                dEIS = r['reaction'].get_reaction_energy(T=T, p=p, etype='electronic') / (eVtokJ * 1.0e3)
+                dGIS = r['reaction'].get_reaction_energy(T=T, p=p, etype='free') / (eVtokJ * 1.0e3)
                 if self.dereference:
                     ref_EIS = sum([reac.Gelec
                                     for reac in r['reaction'].reactants])
-                    ref_GIS = sum([reac.get_free_energy(T=T, p=p, verbose=verbose)
+                    ref_GIS = sum([reac.get_free_energy(T=T, p=p)
                                     for reac in r['reaction'].reactants])
                 else:
                     ref_EIS = 0.0
                     ref_GIS = 0.0
                 if 'multiplicity' not in r.keys():
                     r['multiplicity'] = 1.0
-                self.Gelec += r['multiplicity'] * (self.scaling_coeffs['gradient'][idx] * dEIS + ref_EIS)
-                self.Gfree += r['multiplicity'] * (-ref_EIS - dEIS + dGIS + ref_GIS)
-            self.Gfree += self.Gelec
+                Gelec += r['multiplicity'] * (self.scaling_coeffs['gradient'][idx] * dEIS + ref_EIS)
+                Gfree += r['multiplicity'] * (-ref_EIS - dEIS + dGIS + ref_GIS)
+            Gfree += Gelec
+            return Gfree
 
-            if self.add_to_energy:
-                self.Gfree += self.add_to_energy
-
-            if verbose:
-                print((self.name + ' elec: %1.2f eV') % self.Gelec)
-                print((self.name + ' free: %1.2f eV') % self.Gfree)
         else:
-            super(ScalingState, self).calc_free_energy(T=T, p=p, verbose=verbose)
-
-    def save_pickle(self, path=None):
-        """Save the state as a pickle object.
-
-        """
-
-        path = path if path else ''
-        name = self.name if self.name else 'unnamed'
-
-        pickle.dump(self, open(path + 'scaling_state_' + name + '.pckl', 'wb'))
-
-    def save_pdb(self, path=None):
-        """Saves the atoms object as a pdb structure file.
-
-        """
-
-        print('Scaling state %s has no atoms to save.' % self.name)
-
-    def view_atoms(self, rotation='', path=None):
-        """Views the atoms object using the ASE visualizer.
-        If path is not None, saves as a png.
-
-        """
-
-        print('Scaling state %s has no atoms to view.' % self.name)
+            return super(ScalingState, self).get_free_energy(T=T, p=p)

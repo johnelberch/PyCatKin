@@ -1,5 +1,4 @@
 from pycatkin.functions.rate_constants import *
-import pickle
 import os
 
 
@@ -7,38 +6,30 @@ class Reaction:
 
     def __init__(self, name='reaction', reac_type=None, reversible=True,
                  reactants=None, products=None, TS=None,
-                 area=1.0e-19, scaling=1.0, path_to_pickle=None):
+                 area=1.0e-19, scaling=1.0):
         """Initialises Reaction class.
         Reaction class stores the states involved in the reaction,
         the rate constants, reaction energy and barrier.
-        If path_to_pickle is defined, the pickled object is loaded.
 
         """
 
-        if path_to_pickle:
-            assert (os.path.isfile(path_to_pickle))
-            newself = pickle.load(open(path_to_pickle, 'rb'))
-            assert (isinstance(newself, Reaction))
-            for att in newself.__dict__.keys():
-                setattr(self, att, getattr(newself, att))
-        else:
-            self.reac_type = reac_type
-            self.reversible = reversible
-            self.reactants = reactants
-            self.products = products
-            self.TS = TS
-            self.area = area
-            self.name = name
-            self.scaling = scaling
-            self.kfwd = None
-            self.krev = None
-            self.Keq = None
-            self.dGrxn = None
-            self.dGa_fwd = None
-            self.dGa_rev = None
-            self.dErxn = None
-            self.dEa_fwd = None
-            self.dEa_rev = None
+        self.reac_type = reac_type
+        self.reversible = reversible
+        self.reactants = reactants
+        self.products = products
+        self.TS = TS
+        self.area = area
+        self.name = name
+        self.scaling = scaling
+        self.kfwd = None
+        self.krev = None
+        self.Keq = None
+        self.dGrxn = None
+        self.dGa_fwd = None
+        self.dGa_rev = None
+        self.dErxn = None
+        self.dEa_fwd = None
+        self.dEa_rev = None
 
     def calc_reaction_energy(self, T, p, verbose=False):
         """Computes reaction energies and barriers in J/mol.
@@ -189,15 +180,6 @@ class Reaction:
         if etype == 'electronic':
             return self.dEa_fwd, self.dEa_rev
         return self.dGa_fwd, self.dGa_rev
-
-    def save_pickle(self, path=None):
-        """Save the reaction as a pickle object.
-
-        """
-
-        path = path if path else ''
-        pickle.dump(self, open(path + 'reaction_' + self.name + '.pckl', 'wb'))
-
 
 class UserDefinedReaction(Reaction):
 
